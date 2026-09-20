@@ -13,19 +13,26 @@ local http = {}
 
 local UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 
-local function request_once(url, block_timeout, total_timeout)
+local function request_once(url, block_timeout, total_timeout, referer)
     local body = {}
     socketutil:set_timeout(
         block_timeout or socketutil.LARGE_BLOCK_TIMEOUT,
         total_timeout or socketutil.LARGE_TOTAL_TIMEOUT)
+    local req_headers = {
+        ["User-Agent"] = UA,
+        ["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        ["Accept-Language"] = "zh-CN,zh;q=0.9,en;q=0.8",
+    }
+    -- 部分图床 CDN（如少数派 cdnfile.sspai.com）不带 Referer 会返回 403；
+    -- 而微信图床 mmbiz.qpic.cn 正相反：带第三方 Referer 会被换成 140x140 占位图。
+    -- 因此是否附带 Referer 由调用方通过 opts.referer 显式决定，默认不附带。
+    if referer then
+        req_headers["Referer"] = referer
+    end
     -- LuaSocket：成功时返回 (1, 状态码, headers, status)；失败时返回错误码
     local code, headers, status = socket.skip(1, https.request{
         url = url,
-        headers = {
-            ["User-Agent"] = UA,
-            ["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            ["Accept-Language"] = "zh-CN,zh;q=0.9,en;q=0.8",
-        },
+        headers = req_headers,
         sink = ltn12.sink.table(body),
     })
     if not code then
@@ -48,13 +55,15 @@ end
 -- @param block_timeout 单次阻塞超时（秒）
 -- @param total_timeout 总超时（秒）
 -- @param retries 重试次数（默认 3，即最多尝试 4 次）
+-- @param opts 可选：{ referer = "..." }，给出时随请求发送 Referer 头（图床防盗链用）
 -- 备注：重试之间加短暂延迟，部分站点对高频请求会直接断连（closed），
 -- 小幅退避能显著提高成功率。
-function http.get(url, block_timeout, total_timeout, retries)
+function http.get(url, block_timeout, total_timeout, retries, opts)
     retries = retries or 3
+    local referer = opts and opts.referer
     local last_err
     for attempt = 1, retries + 1 do
-        local body, err = request_once(url, block_timeout, total_timeout)
+        local body, err = request_once(url, block_timeout, total_timeout, referer)
         if body then
             return body
         end

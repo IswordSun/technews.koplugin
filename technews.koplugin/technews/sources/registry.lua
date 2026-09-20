@@ -7,4 +7,8 @@
 return {
     require("technews.sources.ithome"),
     require("technews.sources.leiphone"),
+    require("technews.sources.ifanr"),
+    require("technews.sources.geekpark"),
+    require("technews.sources.solidot"),
+    require("technews.sources.sspai"),
 }

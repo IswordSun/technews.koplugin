@@ -42,6 +42,8 @@ local function img_src(tag)
     if url:sub(1, 5) == "data:" then return nil end
     -- 跳过占位图
     if url:find("/v2/t.png", 1, true) then return nil end
+    -- 跳过 WordPress 表情图片（s.w.org …/images/core/emoji/…，ifanr 内联表情噪音）
+    if url:find("/images/core/emoji/", 1, true) then return nil end
     -- 协议相对地址补全
     if url:sub(1, 2) == "//" then
         url = "https:" .. url
@@ -50,21 +52,65 @@ local function img_src(tag)
     return url
 end
 
+-- 用 find 循环收集同一模式的标签片段，记录字节区间 [s, e]（可含捕获）
+local function find_spans(html, pattern)
+    local spans, pos = {}, 1
+    while true do
+        local s, e, inner = html:find(pattern, pos)
+        if not s then break end
+        spans[#spans + 1] = { s = s, e = e, inner = inner }
+        pos = e + 1
+    end
+    return spans
+end
+
+-- 标签 [s, e] 是否完全落在 span 内部（用于判断图片属于哪个容器）
+local function contained(span, s, e)
+    return s > span.s and e < span.e
+end
+
 --- 提取有序内容块：{ text= } 与 { img=url }
 -- 用于把正文按“文字-图片”顺序渲染到 EPUB。
+-- 图片来源：<p> 内（原有逻辑）、<figure> 内（少数派风格）、以及不在任何
+-- <p>/<figure> 内的独立 <img>；全部按源码位置排序、同一张图只收录一次。
 -- @param html HTML 片段（可含转义或 CDATA）
--- @param drop_keywords 命中即丢弃的关键词
+-- @param drop_keywords 命中即丢弃的关键词（作用于段落文本，连带丢弃该段内图片）
 -- @return 块数组
 function htmltext.blocks(html, drop_keywords)
     if not html or html == "" then return {} end
     html = html:gsub("<!%[CDATA%[", ""):gsub("%]%]>", "")
     html = util.htmlEntitiesToUtf8(html)
-    local blocks = {}
-    local any_p = false
-    for block in html:gmatch("<p[^>]*>(.-)</p>") do
-        any_p = true
-        block = block:gsub("<script[^>]*>.-</script>", "")
-        local text = htmltext.to_text(block)
+
+    local p_spans = find_spans(html, "<p[^>]*>(.-)</p>")
+    local f_spans = find_spans(html, "<figure[^>]*>(.-)</figure>")
+    local imgs = find_spans(html, "(<img[^>]*>)")
+    for _, img in ipairs(imgs) do img.tag = img.inner end
+
+    -- 没有任何可解析的 <p>…</p> 段落时，沿用旧版兜底：整体转文本 + 收集全部图片
+    if #p_spans == 0 then
+        local blocks = {}
+        local text = htmltext.to_text(html)
+        if #text >= 10 then
+            blocks[#blocks + 1] = { text = text }
+        end
+        for _, img in ipairs(imgs) do
+            local url = img_src(img.tag)
+            if url then
+                blocks[#blocks + 1] = { img = url }
+            end
+        end
+        return blocks
+    end
+
+    -- 候选块：文本取 <p> 起点位置，图片取自身位置，最后统一按位置排序即可还原文档顺序
+    local items = {}
+    local function push(pos, kind, value)
+        items[#items + 1] = { pos = pos, kind = kind, value = value }
+    end
+
+    for _, span in ipairs(p_spans) do
+        local inner = span.inner:gsub("<script[^>]*>.-</script>", "")
+        local text = htmltext.to_text(inner)
         local drop = false
         for _, kw in ipairs(drop_keywords or {}) do
             if text:find(kw, 1, true) then
@@ -74,27 +120,55 @@ function htmltext.blocks(html, drop_keywords)
         end
         if not drop then
             if #text >= 10 then
-                blocks[#blocks + 1] = { text = text }
+                push(span.s, "text", text)
             end
-            for tag in block:gmatch("<img[^>]*>") do
-                local url = img_src(tag)
-                if url then
-                    blocks[#blocks + 1] = { img = url }
+            for _, img in ipairs(imgs) do
+                if contained(span, img.s, img.e) then
+                    local url = img_src(img.tag)
+                    if url then push(img.s, "img", url) end
                 end
             end
         end
     end
-    if not any_p then
-        -- 无 <p> 结构：整体转文本 + 收集图片
-        local text = htmltext.to_text(html)
-        if #text >= 10 then
-            blocks[#blocks + 1] = { text = text }
-        end
-        for tag in html:gmatch("<img[^>]*>") do
-            local url = img_src(tag)
-            if url then
-                blocks[#blocks + 1] = { img = url }
+
+    for _, span in ipairs(f_spans) do
+        for _, img in ipairs(imgs) do
+            if contained(span, img.s, img.e) then
+                local url = img_src(img.tag)
+                if url then push(img.s, "img", url) end
             end
+        end
+    end
+
+    -- 独立图片：不属于任何 <p>/<figure>
+    for _, img in ipairs(imgs) do
+        local covered = false
+        for _, span in ipairs(p_spans) do
+            if contained(span, img.s, img.e) then covered = true break end
+        end
+        if not covered then
+            for _, span in ipairs(f_spans) do
+                if contained(span, img.s, img.e) then covered = true break end
+            end
+        end
+        if not covered then
+            local url = img_src(img.tag)
+            if url then push(img.s, "img", url) end
+        end
+    end
+
+    table.sort(items, function(a, b) return a.pos < b.pos end)
+
+    -- 依次产出；嵌套容器（如 <figure> 内嵌 <p>）可能让同一张图入列两次，按位置去重
+    local blocks, seen_img = {}, {}
+    for _, it in ipairs(items) do
+        if it.kind == "img" then
+            if not seen_img[it.pos] then
+                seen_img[it.pos] = true
+                blocks[#blocks + 1] = { img = it.value }
+            end
+        else
+            blocks[#blocks + 1] = { text = it.value }
         end
     end
     return blocks

@@ -125,6 +125,35 @@ do
 end
 
 ----------------------------------------------------------------------
+-- 爱范儿 / 极客公园 / 少数派：同款七牛 imageView2 配方
+----------------------------------------------------------------------
+do
+    local new_hosts = {
+        { name = "爱范儿 s3.ifanr.com", base = "https://s3.ifanr.com/abc/20260920.jpg" },
+        { name = "极客公园 imgslim.geekpark.net", base = "https://imgslim.geekpark.net/photo/a.png" },
+        { name = "少数派 cdnfile.sspai.com", base = "https://cdnfile.sspai.com/2026/09/20/a.jpg" },
+    }
+    for _, h in ipairs(new_hosts) do
+        eq(imgurl.rewrite(h.base, 800), h.base .. "?imageView2/2/w/800",
+            h.name .. "：无查询串 → w_800 精确网址")
+        eq(imgurl.rewrite(h.base, 480), h.base .. "?imageView2/2/w/480",
+            h.name .. "：无查询串 → w_480 精确网址")
+        local replaced = imgurl.rewrite(h.base .. "?imageView2/2/w/1200", 800)
+        eq(replaced, h.base .. "?imageView2/2/w/800",
+            h.name .. "：已有 imageView2 查询串被整段替换")
+        eq(count(replaced, "?"), 1, h.name .. "：重写结果只有一个 ? 分隔符")
+        eq(replaced:find("w/1200", 1, true), nil, h.name .. "：重写结果不含原宽度 1200")
+    end
+
+    eq(imgurl.rewrite("https://cdnfile.sspai.com/2026/09/20/a.jpg?x=1#frag", 800),
+        "https://cdnfile.sspai.com/2026/09/20/a.jpg?imageView2/2/w/800",
+        "少数派图片：查询串与 fragment 同时存在时都被丢弃")
+    eq(imgurl.rewrite("http://s3.ifanr.com/a.jpg", 800),
+        "http://s3.ifanr.com/a.jpg?imageView2/2/w/800",
+        "爱范儿 http:// 协议同样可重写且保留协议")
+end
+
+----------------------------------------------------------------------
 -- 不可重写的输入：CNBeta / 雷锋网非图床子域 / 其他域名 / nil / 空串
 ----------------------------------------------------------------------
 do
@@ -135,11 +164,35 @@ do
         "CNBeta 图片即使带 x-bce-process 也不重写")
     eq(imgurl.rewrite("https://www.leiphone.com/cover.jpg", 800), nil,
         "雷锋网非图床子域（www）不重写")
+    eq(imgurl.rewrite("https://mmbiz.qpic.cn/sz_mmbiz_jpg/abc/640", 800), nil,
+        "微信图床 mmbiz.qpic.cn 不重写（imageView2 被忽略，路径式缩放无效）")
+    eq(imgurl.rewrite("https://mmbiz.qpic.cn/sz_mmbiz_jpg/abc/0?wx_fmt=jpeg", 800), nil,
+        "微信图床带查询串同样不重写")
     eq(imgurl.rewrite("https://example.com/a.jpg", 800), nil,
         "无关域名不重写")
     eq(imgurl.rewrite(nil, 800), nil, "nil 输入返回 nil")
     eq(imgurl.rewrite("", 800), nil, "空串输入返回 nil")
     eq(imgurl.rewrite("https://img.ithome.com/a.jpg"), nil, "缺少 width 返回 nil")
+end
+
+----------------------------------------------------------------------
+-- Referer 查询：仅少数派图床需要；mmbiz 明确不能带，未知域名返回 nil
+----------------------------------------------------------------------
+do
+    eq(imgurl.referer("https://cdnfile.sspai.com/2026/09/20/a.jpg"), "https://sspai.com/",
+        "少数派图床返回 https://sspai.com/")
+    eq(imgurl.referer("http://cdnfile.sspai.com/a.jpg?imageView2/2/w/800"), "https://sspai.com/",
+        "带查询串与 http:// 的少数派图片同样返回 Referer")
+    eq(imgurl.referer("https://cdnfile.sspai.com.evil.com/a.jpg"), nil,
+        "相似域名 cdnfile.sspai.com.evil.com 不匹配")
+    eq(imgurl.referer("https://mmbiz.qpic.cn/sz_mmbiz_jpg/abc/0?wx_fmt=jpeg"), nil,
+        "微信图床 mmbiz.qpic.cn 返回 nil（带第三方 Referer 会得到 140x140 占位图）")
+    eq(imgurl.referer("https://s3.ifanr.com/a.jpg"), nil, "爱范儿返回 nil（无需 Referer）")
+    eq(imgurl.referer("https://imgslim.geekpark.net/a.jpg"), nil, "极客公园返回 nil（无需 Referer）")
+    eq(imgurl.referer("https://img.ithome.com/a.jpg"), nil, "IT之家返回 nil（无需 Referer）")
+    eq(imgurl.referer("https://example.com/a.jpg"), nil, "未知域名返回 nil")
+    eq(imgurl.referer(nil), nil, "referer(nil) 返回 nil")
+    eq(imgurl.referer(""), nil, "referer 空串返回 nil")
 end
 
 ----------------------------------------------------------------------

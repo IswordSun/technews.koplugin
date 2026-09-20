@@ -1,4 +1,4 @@
--- technews/rss.lua — RSS 2.0 解析（够用即可：title / link / description / pubDate）
+-- technews/rss.lua — RSS 2.0 解析（够用即可：title / link / description / content:encoded / pubDate）
 
 local htmltext = require("technews.htmltext")
 
@@ -15,8 +15,15 @@ local function strip_cdata(s)
     return s
 end
 
+-- Lua 模式魔法字符转义：tag 名可能含 `-` 等特殊字符（如 content:encoded 之外
+-- 的命名空间标签），不转义会被当作量词导致匹配异常。
+local function pattern_escape(s)
+    return (s:gsub("([%^%$%(%)%%%.%[%]%*%+%-%?])", "%%%1"))
+end
+
 local function tag_value(block, tag)
-    local v = block:match("<" .. tag .. "[^>]*>(.-)</" .. tag .. ">")
+    local pat = pattern_escape(tag)
+    local v = block:match("<" .. pat .. "[^>]*>(.-)</" .. pat .. ">")
     return strip_cdata(v)
 end
 
@@ -65,14 +72,18 @@ function rss.parse(xml)
         local title = tag_value(block, "title")
         local link = tag_value(block, "link")
         local desc = tag_value(block, "description")
+        -- content:encoded（如爱范儿）含完整正文，非空时优先于短摘要 description
+        local content = tag_value(block, "content:encoded")
+        local body = content
+        if not body or body == "" then body = desc end
         local pub = tag_value(block, "pubDate")
         if title and link and link ~= "" then
             local ts = parse_date(pub)
             items[#items + 1] = {
                 title = htmltext.to_text(title),
                 link = link,
-                summary = desc and htmltext.to_text(desc) or "",
-                summary_html = desc or "",  -- 原始 HTML（含图片）
+                summary = body and htmltext.to_text(body) or "",
+                summary_html = body or "",  -- 原始 HTML（含图片）
                 ts = ts,
                 time = ts and os.date("%m-%d %H:%M", ts) or nil,
             }
