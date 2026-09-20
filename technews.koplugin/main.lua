@@ -20,6 +20,7 @@ local extract = require("technews.extract")
 local epub = require("technews.epub")
 local htmltext = require("technews.htmltext")
 local http = require("technews.http")
+local imgurl = require("technews.imgurl")
 local rss = require("technews.rss")
 local storage = require("technews.storage")
 local window = require("technews.window")
@@ -275,7 +276,14 @@ function TechNews:fetchSource(source, limit, progress)
             if not Trapper:info(msg) then
                 break
             end
-            local data = http.get(url)
+            -- IT之家图片让 BCE CDN 缩放（宽 800）；原 URL 自带的
+            -- x-bce-process 必须被替换而非追加，否则 CDN 忽略新参数返回原图
+            local data, img_err = http.get(imgurl.rewrite(url, 800) or url)
+            -- 超高图缩到 800 宽会超出 CDN 边长上限（HTTP 400），降级 480 重试
+            if not data and img_err and img_err:find("HTTP 400", 1, true) then
+                local fallback = imgurl.rewrite(url, 480)
+                if fallback then data = http.get(fallback) end
+            end
             if data and #data > 0 then
                 images[url] = { data = data, ext = image_ext(url) }
             end
