@@ -48,7 +48,7 @@
 | 源 | id | 模式 | feed | 单源条数 | 合并条数 | 回补阈值 | 每条图片 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | IT之家 | `ithome` | summary（RSS 描述已含完整 HTML） | https://www.ithome.com/rss/ | 60 | 30 | 15 | 1 |
-| CNBeta | `cnbeta` | fulltext（逐篇抓文章页） | https://www.cnbeta.com.tw/backend.php | 25 | 12 | 10 | 2 |
+| CNBeta | `cnbeta` | fulltext（逐篇抓文章页，失败回退描述） | https://rss.cnbeta.com.tw/ | 25 | 12 | 10 | 2 |
 
 - 合并模式：两源混排，按时间戳倒序（无时间的排最后），`issue_id = "merged"`
 - 合并时某源失败不致命：记录警告，只要还有条目就照常出刊
@@ -166,13 +166,14 @@ luacheck technews.koplugin spec  # 静态检查（应为 0 warning / 0 error）
 5. **清理不一致**（`technews/storage.lua:44-69` 对比 `98-119`）：`cleanup()` 会连带删 `.sdr` 阅读状态，但 `clear_date()`/`clear_all()` 只删 `.epub`。切换「包含图片」重建 EPUB 后旧 `.sdr` 会残留。
 6. **死代码**（`technews/extract.lua:33`、`technews/htmltext.lua:39`）：`extract.paragraphs` 与 `htmltext.paragraphs` 无调用者。（`epub.lua` 里的局部 `paragraphs_html` 是另一个函数，仍在用。）
 7. **版本号漂移**（`main.lua:37` 对比 `163`）：`version` 字段是 `"0.1.0"`，「关于」弹窗却写 `v0.1`。
+8. **CNBeta 域名重定向**（2026-09-20 发现，`technews/sources/cnbeta.lua`）：`www.cnbeta.com.tw` 全站（含旧 feed `backend.php` 与文章页）在境外出口 IP 下 302 跳转 MSN。旧 feed 已不可用，现改用 `https://rss.cnbeta.com.tw/`（内容同源、描述更全约 360 字 HTML）。境外网络（含本机模拟器）下文章页抓取会快速失败并回退到 RSS 描述；国内直连真机预期正常，**待真机确认**。
 
 ### TODO.md 状态摘要
 
 以 `technews.koplugin/TODO.md` 为活清单，这里只做概览，不逐条重抄：
 
 - **A 先做**（封面、缓存自动清理、图片开关即时生效、错误提示友好化、缓存过期自动更新）：5/5 完成
-- **B 体验打磨**（今日时间窗口、抓取进度细分、两源去重、图片瘦身、目录层级化、摘要模式补全）：2/6 完成（今日时间窗口、抓取进度细分已做），其余待办
+- **B 体验打磨**（今日时间窗口、抓取进度细分、两源去重、图片瘦身、目录层级化、摘要模式补全）：3/6 完成（今日时间窗口、抓取进度细分、两源去重已做），其余待办
 - **C 成品化**（设置集中、真机验证、失败降级策略、版本化打包、i18n）：0/5 待办
 - 末尾「已知取舍记录」记有：今日定义、时区（两家 RSS 的 pubDate 是真 GMT）、图片策略、CNBeta 逐篇抓取、合并条数、自测钩子
 

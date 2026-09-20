@@ -44,6 +44,8 @@
 - **时区**：两家 RSS 的 pubDate 是真 GMT（已实测验证），统一转本地时间显示与过滤。
 - 图片策略：IT之家每条 1 张头图、CNBeta 每条 2 张、单期上限 50 张。
 - CNBeta 全文逐篇抓取（25 条 ≈ 1~2 分钟），IT之家用 RSS 描述（1 次请求）。
+- CNBeta feed 改用 https://rss.cnbeta.com.tw/（旧 backend.php 302→MSN，2026-09-20）；
+  境外网络下文章页可能 302，此时自动回退 RSS 描述。
 - 合并视图：IT之家 30 条 + CNBeta 12 条，按时间倒序混排。
 - 自测钩子：`TECHNEWS_SELFTEST=1` 环境变量，启动 3 秒后自动打开合并版；
   必须用全局变量保护（插件 dofile 加载会重置模块级变量）。
