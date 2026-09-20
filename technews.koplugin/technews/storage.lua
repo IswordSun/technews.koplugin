@@ -41,7 +41,10 @@ function storage:epub_mtime(source_id, date)
     return lfs.attributes(self:epub_path(source_id, date), "modification")
 end
 
---- 删除指定日期的全部 EPUB（重新抓取用）
+-- 前置声明（定义见文件末尾，clear_date/clear_all 也要用）
+local remove_recursive
+
+--- 删除指定日期的全部 EPUB 及其 .sdr 阅读状态（重新抓取用）
 function storage:clear_date(date)
     local suffix = "-" .. date .. ".epub"
     local names = {}
@@ -52,10 +55,11 @@ function storage:clear_date(date)
     end
     for _, name in ipairs(names) do
         os.remove(self.dir .. name)
+        remove_recursive(self.dir .. name .. ".sdr")
     end
 end
 
---- 清空全部缓存
+--- 清空全部缓存（EPUB 与对应 .sdr 阅读状态）
 function storage:clear_all()
     local names = {}
     for name in lfs.dir(self.dir) do
@@ -65,6 +69,7 @@ function storage:clear_all()
     end
     for _, name in ipairs(names) do
         os.remove(self.dir .. name)
+        remove_recursive(self.dir .. name .. ".sdr")
     end
 end
 
@@ -81,7 +86,7 @@ function storage:list()
 end
 
 -- 递归删除文件/目录（用于清理 EPUB 与 .sdr 阅读状态目录）
-local function remove_recursive(path)
+remove_recursive = function(path)
     local mode = lfs.attributes(path, "mode")
     if mode == "directory" then
         for entry in lfs.dir(path) do

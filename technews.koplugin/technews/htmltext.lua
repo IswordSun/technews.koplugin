@@ -33,30 +33,6 @@ function htmltext.to_text(raw)
     return text
 end
 
---- 提取 <p> 段落数组（用于网页正文抽取）
--- @param region HTML 片段
--- @param drop_keywords 命中的段落会被丢弃（广告等）
-function htmltext.paragraphs(region, drop_keywords)
-    local paras = {}
-    for block in region:gmatch("<p[^>]*>(.-)</p>") do
-        -- 干掉脚本/样式
-        block = block:gsub("<script[^>]*>.-</script>", "")
-        block = block:gsub("<style[^>]*>.-</style>", "")
-        local text = htmltext.to_text(block)
-        local drop = false
-        for _, kw in ipairs(drop_keywords or {}) do
-            if text:find(kw, 1, true) then
-                drop = true
-                break
-            end
-        end
-        if not drop and #text >= 10 then
-            paras[#paras + 1] = text
-        end
-    end
-    return paras
-end
-
 -- 从 <img> 标签里取真实图片地址（兼容懒加载的 data-original / data-src）
 local function img_src(tag)
     local url = tag:match('data%-original="([^"]+)"')

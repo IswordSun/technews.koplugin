@@ -29,21 +29,4 @@ function extract.blocks(html, opts)
     return blocks
 end
 
---- 从文章页 HTML 抽取正文段落（纯文字）。
-function extract.paragraphs(html, opts)
-    if not html or type(opts) ~= "table" then return nil end
-    local start = html:find(opts.start, 1, true)
-    if not start then return nil end
-    start = start + #opts.start
-    local stop = start + (opts.max_len or 30000)
-    for _, marker in ipairs(opts.ends or {}) do
-        local p = html:find(marker, start, true)
-        if p and p < stop then stop = p end
-    end
-    local region = html:sub(start, stop)
-    local paras = htmltext.paragraphs(region, opts.drop)
-    if #paras == 0 then return nil end
-    return paras
-end
-
 return extract
