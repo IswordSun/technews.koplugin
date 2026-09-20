@@ -7,7 +7,7 @@
 
 - 项目：`technews.koplugin`，个人自用的 KOReader 插件。多源 RSS/网页 → 内容块（文字+图片）→ 整期 EPUB → KOReader 原生阅读器
 - 核心链路可用：单源/合并、缓存、图片开关、菜单与手势入口都已就位
-- 仓库仅本地：分支 `main`，**无 remote**；2026-09-20 共 9 个提交（基线 `4c962b0`，B 段体验打磨已完成）
+- 仓库仅本地：分支 `main`，**无 remote**；2026-09-20 完成基建与 B 段体验打磨（基线提交 `4c962b0`，后续改动见 git log）
 - 模拟器插件副本与源码逐字一致（2026-09-20，`diff -rq` 通过）
 - 测试与 lint 基建已就位：4 个 spec（123 项断言全绿：window/dedupe/imgurl/epub）、`scripts/run_specs.sh`、`.luacheckrc`（0 warning），命令见 §5
 - B 段体验打磨 5/5 完成（进度细分、两源去重、图片瘦身、目录层级化）；摘要模式补全经调研取消（IT之家 RSS 描述即全文）
