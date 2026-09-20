@@ -15,6 +15,7 @@ local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local logger = require("logger")
 
+local dedupe = require("technews.dedupe")
 local extract = require("technews.extract")
 local epub = require("technews.epub")
 local htmltext = require("technews.htmltext")
@@ -412,8 +413,26 @@ function TechNews:openMergedIssue()
         table.sort(all, function(a, b)
             return (a.ts or 0) > (b.ts or 0)
         end)
+        -- 跨源去重：同一条新闻两源都报时只保留正文更全的一条
+        local kept, removed = dedupe.filter(all)
+        -- 去重保留更全条目时会把它移到列表末尾，这里恢复按时间倒序
+        table.sort(kept, function(a, b)
+            return (a.ts or 0) > (b.ts or 0)
+        end)
+        for _, pair in ipairs(removed) do
+            logger.info("technews dedupe:",
+                pair.kept.title, "|", pair.dropped.title, "|",
+                ("%.2f"):format(dedupe.similarity(pair.kept.title, pair.dropped.title)))
+        end
+        logger.info("technews dedupe removed:",
+            tostring(#removed), "of", tostring(#all))
+        for _, pair in ipairs(dedupe.near_misses(kept, 0.6)) do
+            logger.info("technews dedupe near-miss:",
+                pair.a.title, "|", pair.b.title, "|",
+                ("%.2f"):format(pair.similarity))
+        end
         local title = "今日科技资讯 · " .. date
-        self:buildAndOpen("merged", title, date, all, all_images)
+        self:buildAndOpen("merged", title, date, kept, all_images)
     end)
 end
 
