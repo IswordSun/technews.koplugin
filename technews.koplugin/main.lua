@@ -268,13 +268,16 @@ function TechNews:fetchSource(source, limit, progress)
                 end
             end
         end
-        local total = math.min(#pending, MAX_IMAGES_PER_ISSUE)
+        -- 合并模式下由调用方传入剩余额度，单源时用整期上限
+        local cap = (progress and progress.image_budget) or MAX_IMAGES_PER_ISSUE
+        if cap < 0 then cap = 0 end
+        local total = math.min(#pending, cap)
         for i = 1, total do
             local url = pending[i].url
             local msg = string.format("%s下载图片 %d/%d…（点击可取消）",
                 prefix, i, total)
             if not Trapper:info(msg) then
-                break
+                return nil, "已取消"
             end
             -- IT之家图片让 BCE CDN 缩放（宽 800）；原 URL 自带的
             -- x-bce-process 必须被替换而非追加，否则 CDN 忽略新参数返回原图
@@ -292,7 +295,7 @@ function TechNews:fetchSource(source, limit, progress)
             source.id,
             "pending=" .. tostring(#pending),
             "downloaded=" .. tostring(total),
-            "cap=" .. tostring(MAX_IMAGES_PER_ISSUE))
+            "cap=" .. tostring(cap))
     end
 
     return { items = result, images = images }
@@ -362,6 +365,16 @@ function TechNews:showFetchError(err, retry_cb)
     end)
 end
 
+--- 用户主动取消：中性提示，不提供重试
+function TechNews:showCancelled()
+    UIManager:scheduleIn(0.1, function()
+        UIManager:show(InfoMessage:new{
+            text = "已取消抓取",
+            timeout = 2,
+        })
+    end)
+end
+
 --- 打开单个源的今日资讯（缓存优先）
 function TechNews:openIssue(source_id)
     local source = source_by_id(source_id)
@@ -375,6 +388,10 @@ function TechNews:openIssue(source_id)
     Trapper:wrap(function()
         local bundle, err = self:fetchSource(source)
         if not bundle then
+            if err == "已取消" then
+                self:showCancelled()
+                return
+            end
             self:showFetchError(err, function() self:openIssue(source_id) end)
             return
         end
@@ -395,10 +412,16 @@ function TechNews:openMergedIssue()
         local all = {}
         local all_images = {}
         local failed = {}
+        local image_budget = MAX_IMAGES_PER_ISSUE
         for i, source in ipairs(SOURCES) do
             local bundle, err = self:fetchSource(source, source.merge_max_items,
-                { source_index = i, source_count = #SOURCES })
+                { source_index = i, source_count = #SOURCES,
+                  image_budget = image_budget })
             if bundle then
+                -- 合并期图片上限跨源共享：按实际下载数扣减剩余额度
+                local used = 0
+                for _ in pairs(bundle.images) do used = used + 1 end
+                image_budget = math.max(image_budget - used, 0)
                 for _, item in ipairs(bundle.items) do
                     all[#all + 1] = item
                 end
@@ -406,6 +429,11 @@ function TechNews:openMergedIssue()
                     all_images[url] = img
                 end
             else
+                if err == "已取消" then
+                    -- 取消是整期语义：立刻中止，不当作单源失败继续凑刊
+                    self:showCancelled()
+                    return
+                end
                 logger.warn("technews merge source failed:",
                     source.id, tostring(err))
                 failed[#failed + 1] = source.name
