@@ -1,0 +1,5 @@
+# macOS metadata
+.DS_Store
+
+# temp/partial artifacts
+*.part
