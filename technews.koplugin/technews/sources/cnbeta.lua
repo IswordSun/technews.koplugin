@@ -12,7 +12,6 @@ return {
     max_items = 25,         -- 逐篇抓取，控制数量（每篇 1 次请求）
     merge_max_items = 12,
     min_items = 10,         -- 今日不足此数时向前回补
-    max_images_per_item = 2, -- 每条最多 2 张正文图
     article_extract = {
         start = '<div class="cnbeta-article-body">',
         ends = {

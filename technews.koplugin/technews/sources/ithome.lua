@@ -11,5 +11,4 @@ return {
     max_items = 60,         -- 单独阅读时的条数
     merge_max_items = 30,   -- 合并视图中的条数
     min_items = 15,         -- 今日不足此数时向前回补（保证早晨的信息量）
-    max_images_per_item = 1, -- 每条取第 1 张图（新闻头图）
 }

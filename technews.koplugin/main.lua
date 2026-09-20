@@ -30,8 +30,8 @@ local SOURCES = {
     require("technews.sources.cnbeta"),
 }
 
--- 每期图片总量上限（控制抓取时间与 EPUB 体积）
-local MAX_IMAGES_PER_ISSUE = 50
+-- 每期图片总量上限（安全阀：控制抓取时间与 EPUB 体积；每条默认取全部图片）
+local MAX_IMAGES_PER_ISSUE = 150
 
 local TechNews = WidgetContainer:extend{
     name = "technews",
@@ -256,10 +256,10 @@ function TechNews:fetchSource(source, limit, progress)
         local pending = {}
         local seen = {}
         for _, item in ipairs(result) do
-            local per_item = source.max_images_per_item or 1
+            local per_item = source.max_images_per_item -- nil = 不限（取全部图片）
             local count = 0
             for _, block in ipairs(item.blocks) do
-                if block.img and count < per_item then
+                if block.img and (not per_item or count < per_item) then
                     if not seen[block.img] then
                         seen[block.img] = true
                         pending[#pending + 1] = { url = block.img }

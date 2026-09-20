@@ -48,8 +48,8 @@
 
 | 源 | id | 模式 | feed | 单源条数 | 合并条数 | 回补阈值 | 每条图片 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| IT之家 | `ithome` | summary（RSS 描述已含完整 HTML） | https://www.ithome.com/rss/ | 60 | 30 | 15 | 1 |
-| CNBeta | `cnbeta` | fulltext（逐篇抓文章页，失败回退描述） | https://rss.cnbeta.com.tw/ | 25 | 12 | 10 | 2 |
+| IT之家 | `ithome` | summary（RSS 描述已含完整 HTML） | https://www.ithome.com/rss/ | 60 | 30 | 15 | 全部 |
+| CNBeta | `cnbeta` | fulltext（逐篇抓文章页，失败回退描述） | https://rss.cnbeta.com.tw/ | 25 | 12 | 10 | 全部 |
 
 - 合并模式：两源混排，按时间戳倒序（无时间的排最后），`issue_id = "merged"`
 - 合并时某源失败不致命：记录警告，只要还有条目就照常出刊
@@ -158,7 +158,7 @@ luacheck technews.koplugin spec  # 静态检查（应为 0 warning / 0 error）
 
 每条都注明文件位置，方便定位。以下为仍待处理的问题。
 
-1. **构建内存风险**（`technews/epub.lua:44-68`）：整期内容常驻内存；`make_zip` 用 `table.concat` 把所有条目（含图片二进制）拼成一整块 zip 字符串，峰值约为图片字节数的 2 倍。低内存 Kindle 上有隐患。（2026-09-20 图片瘦身后载荷显著下降，峰值随之缓解；流式构建仍未做。）
+1. **构建内存风险**（`technews/epub.lua:44-68`）：整期内容常驻内存；`make_zip` 用 `table.concat` 把所有条目（含图片二进制）拼成一整块 zip 字符串，峰值约为图片字节数的 2 倍。低内存 Kindle 上有隐患。（2026-09-20 图片经 CDN 缩放宽 800 后单张显著变小，但每条已放开为全量图片，峰值仍随图片张数增长；流式构建未做。）
 2. **CRC32 纯 Lua 逐字节循环**（`technews/epub.lua:11-32`）：对整期图片载荷逐字节运算（IT之家图片缩放宽 800 后显著变小），真机上可能造成构建卡顿；需要基准测试。
 3. **版本号漂移**（`main.lua:37` 对比 `163`）：`version` 字段是 `"0.1.0"`，「关于」弹窗却写 `v0.1`。
 4. **CNBeta 域名重定向**（2026-09-20 发现，`technews/sources/cnbeta.lua`）：`www.cnbeta.com.tw` 全站（含旧 feed `backend.php` 与文章页）在境外出口 IP 下 302 跳转 MSN。旧 feed 已不可用，现改用 `https://rss.cnbeta.com.tw/`（内容同源、描述更全约 360 字 HTML）。境外网络（含本机模拟器）下文章页抓取会快速失败并回退到 RSS 描述；国内直连真机预期正常，**待真机确认**。
