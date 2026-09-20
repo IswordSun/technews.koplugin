@@ -1,6 +1,10 @@
--- technews/sources/cnbeta.lua — CNBeta 适配器
+-- technews/sources/cnbeta.lua — CNBeta 适配器（当前未启用）
 --
--- RSS 描述约 360 字（含 HTML），完整正文仍逐篇抓文章页提取。
+-- 停用原因（2026-09-20）：CNBeta 的 .tw 域名在境外出口 IP 下全站 302 跳转
+-- MSN，大陆不翻墙不可达；第二个源已改为雷锋网（见 sources/leiphone.lua）。
+-- 重新启用：在 main.lua 的 SOURCES 中加入 require("technews.sources.cnbeta")。
+--
+-- 停用前的说明：RSS 描述约 360 字（含 HTML），完整正文仍逐篇抓文章页提取。
 -- 2026-09-20：旧 feed backend.php 已 302 跳转 MSN，改用 rss.cnbeta.com.tw；
 -- 部分网络（境外出口 IP）下文章页也会 302，抓取失败时回退到 RSS 描述。
 

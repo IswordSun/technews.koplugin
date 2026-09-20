@@ -6,7 +6,7 @@
 ## 0. 当前状态一句话版
 
 - 项目：`technews.koplugin`，个人自用的 KOReader 插件。多源 RSS/网页 → 内容块（文字+图片）→ 整期 EPUB → KOReader 原生阅读器
-- 核心链路可用：单源/合并、缓存、图片开关、菜单与手势入口都已就位
+- 核心链路可用：单源/合并、缓存、图片开关、菜单与手势入口都已就位（当前源：IT之家 + 雷锋网）
 - 仓库仅本地：分支 `main`，**无 remote**；2026-09-20 完成基建与 B 段体验打磨（基线提交 `4c962b0`，后续改动见 git log）
 - 模拟器插件副本与源码逐字一致（2026-09-20，`diff -rq` 通过）
 - 测试与 lint 基建已就位：4 个 spec（123 项断言全绿：window/dedupe/imgurl/epub）、`scripts/run_specs.sh`、`.luacheckrc`（0 warning），命令见 §5
@@ -34,7 +34,7 @@
         ├── rss.lua                                 ← RSS 2.0 解析、RFC822 时间
         ├── storage.lua                             ← 缓存目录、EPUB 路径、清理
         ├── window.lua                              ←「今日」时间窗口
-        └── sources/{ithome,cnbeta}.lua             ← 各源适配器
+        └── sources/{ithome,leiphone}.lua           ← 各源适配器（cnbeta.lua 停用保留）
 ```
 
 关键分界：**只有 `technews.koplugin/` 会被部署**；`spec/`、`scripts/`、`AGENTS.md`、`.omo/`、`.git/` 都留在仓库里。
@@ -49,18 +49,18 @@
 | 源 | id | 模式 | feed | 单源条数 | 合并条数 | 每条图片 |
 | --- | --- | --- | --- | --- | --- | --- |
 | IT之家 | `ithome` | summary（RSS 描述已含完整 HTML） | https://www.ithome.com/rss/ | 60 | 30 | 全部 |
-| CNBeta | `cnbeta` | fulltext（逐篇抓文章页，失败回退描述） | https://rss.cnbeta.com.tw/ | 25 | 12 | 全部 |
+| 雷锋网 | `leiphone` | summary（RSS 描述即完整正文） | https://www.leiphone.com/feed | 20 | 10 | 全部 |
 
 - 合并模式：两源混排，按时间戳倒序（无时间的排最后），`issue_id = "merged"`
 - 合并时某源失败不致命：记录警告，只要还有条目就照常出刊
-- CNBeta 逐篇抓正文较慢（25 条约 1~2 分钟）；IT之家单次请求即可
+- 两家均为单次请求（RSS 描述即完整正文/含图），无需逐篇抓取；CNBeta 因 .tw 域名境外 302→MSN、大陆不翻墙不可达已停用（适配器保留，见 §6）
 
 ### 菜单（主菜单 → 科技资讯订阅）
 
 | 菜单项 | 行为 |
 | --- | --- |
 | IT之家 · 今日新闻 | `openIssue("ithome")` |
-| CNBeta · 今日资讯 | `openIssue("cnbeta")` |
+| 雷锋网 · 今日资讯 | `openIssue("leiphone")` |
 | 合并 · 今日科技资讯 | `openMergedIssue()` |
 | 包含图片（开关） | 默认开；切换后清当天缓存，下次打开重建 |
 | 缓存 6 小时后自动更新（开关） | 默认关；开启后当天缓存超 6 小时则重抓 |
@@ -161,9 +161,7 @@ luacheck technews.koplugin spec  # 静态检查（应为 0 warning / 0 error）
 1. **构建内存风险**（`technews/epub.lua:44-68`）：整期内容常驻内存；`make_zip` 用 `table.concat` 把所有条目（含图片二进制）拼成一整块 zip 字符串，峰值约为图片字节数的 2 倍。低内存 Kindle 上有隐患。（2026-09-20 图片经 CDN 缩放宽 800 后单张显著变小，但每条已放开为全量图片，峰值仍随图片张数增长；流式构建未做。）
 2. **CRC32 纯 Lua 逐字节循环**（`technews/epub.lua:11-32`）：对整期图片载荷逐字节运算（IT之家图片缩放宽 800 后显著变小），真机上可能造成构建卡顿；需要基准测试。
 3. **版本号漂移**（`main.lua:37` 对比 `163`）：`version` 字段是 `"0.1.0"`，「关于」弹窗却写 `v0.1`。
-4. **CNBeta 域名重定向**（2026-09-20 发现，`technews/sources/cnbeta.lua`）：`www.cnbeta.com.tw` 全站（含旧 feed `backend.php` 与文章页）在境外出口 IP 下 302 跳转 MSN。旧 feed 已不可用，现改用 `https://rss.cnbeta.com.tw/`（内容同源、描述更全约 360 字 HTML）。境外网络（含本机模拟器）下文章页抓取会快速失败并回退到 RSS 描述；国内直连真机预期正常，**待真机确认**。
-
-2026-09-20 已修复并验证（详见 git log）：取消语义统一（取消 = 整期中止 + 中性提示）、合并期图片上限跨源共享 50、`clear_date`/`clear_all` 同步清理 `.sdr`、删除无调用方的 `paragraphs` 链。
+2026-09-20 已修复并验证（详见 git log）：取消语义统一（取消 = 整期中止 + 中性提示）、合并期图片上限跨源共享（当前 150）、`clear_date`/`clear_all` 同步清理 `.sdr`、删除无调用方的 `paragraphs` 链；CNBeta 因 .tw 域名境外 302→MSN、大陆不翻墙不可达而停用，第二个源改为雷锋网（适配器保留，可再启用）。
 
 ### TODO.md 状态摘要
 

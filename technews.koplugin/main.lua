@@ -27,7 +27,7 @@ local window = require("technews.window")
 
 local SOURCES = {
     require("technews.sources.ithome"),
-    require("technews.sources.cnbeta"),
+    require("technews.sources.leiphone"),
 }
 
 -- 每期图片总量上限（安全阀：控制抓取时间与 EPUB 体积；每条默认取全部图片）
@@ -117,9 +117,9 @@ function TechNews:getMenuItems()
             callback = function() self:openIssue("ithome") end,
         },
         {
-            text = "CNBeta · 今日资讯",
+            text = "雷锋网 · 今日资讯",
             keep_menu_open = false,
-            callback = function() self:openIssue("cnbeta") end,
+            callback = function() self:openIssue("leiphone") end,
         },
         {
             text = "合并 · 今日科技资讯",
@@ -162,7 +162,7 @@ function TechNews:getMenuItems()
             keep_menu_open = true,
             callback = function()
                 UIManager:show(InfoMessage:new{
-                    text = "科技资讯订阅 v0.1\n\n作者：Isword先生\n数据来源：IT之家 · CNBeta\n内容仅供个人阅读学习。",
+                    text = "科技资讯订阅 v0.1\n\n作者：Isword先生\n数据来源：IT之家 · 雷锋网\n内容仅供个人阅读学习。",
                 })
             end,
         },

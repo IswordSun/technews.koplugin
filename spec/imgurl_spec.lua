@@ -101,7 +101,31 @@ do
 end
 
 ----------------------------------------------------------------------
--- 不可重写的输入：CNBeta / 其他域名 / nil / 空串
+-- 雷锋网：七牛 CDN，丢弃原 imageMogr2 查询串 → 改用 imageView2 配方
+-- （模式 2 = 等比缩到不超过目标宽，实测不会放大小图）
+----------------------------------------------------------------------
+do
+    local base = "https://static.leiphone.com/uploads/new/images/20260920/abc.jpg"
+    local http_base = base:gsub("^https", "http")
+    local out = imgurl.rewrite(base .. "?imageMogr2/quality/90", 800)
+
+    eq(out, base .. "?imageView2/2/w/800",
+        "带 imageMogr2/quality/90 的雷锋网图片：替换查询串得到精确网址")
+    ok(not out:find("imageMogr2", 1, true), "重写结果不含原有的 imageMogr2")
+    eq(count(out, "?"), 1, "重写结果只有一个 ? 分隔符")
+    eq(imgurl.rewrite(base, 800), base .. "?imageView2/2/w/800",
+        "无查询串的雷锋网图片：直接追加 imageView2 配方")
+    eq(imgurl.rewrite(base, 480), base .. "?imageView2/2/w/480",
+        "w_480 降级配方：仅宽度不同")
+    eq(imgurl.rewrite(http_base, 800), http_base .. "?imageView2/2/w/800",
+        "http:// 协议同样可重写且保留协议")
+    eq(imgurl.rewrite(base .. "?imageMogr2/quality/90#frag", 800),
+        base .. "?imageView2/2/w/800",
+        "查询串与 fragment 同时存在时都被丢弃")
+end
+
+----------------------------------------------------------------------
+-- 不可重写的输入：CNBeta / 雷锋网非图床子域 / 其他域名 / nil / 空串
 ----------------------------------------------------------------------
 do
     eq(imgurl.rewrite("https://static.cnbetacdn.com/article/2026/0919/abc.jpg", 800), nil,
@@ -109,6 +133,8 @@ do
     eq(imgurl.rewrite("https://static.cnbetacdn.com/article/2026/0919/abc.jpg"
         .. "?x-bce-process=image/format,f_auto", 800), nil,
         "CNBeta 图片即使带 x-bce-process 也不重写")
+    eq(imgurl.rewrite("https://www.leiphone.com/cover.jpg", 800), nil,
+        "雷锋网非图床子域（www）不重写")
     eq(imgurl.rewrite("https://example.com/a.jpg", 800), nil,
         "无关域名不重写")
     eq(imgurl.rewrite(nil, 800), nil, "nil 输入返回 nil")
