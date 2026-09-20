@@ -8,10 +8,29 @@
 --
 -- 自测钩子：环境变量 TECHNEWS_SELFTEST=1 时，启动 3 秒后自动打开「合并·今日」
 
+-- 首次引导一次性守卫：插件经 dofile 重载会重置模块级变量，必须用全局记录
+-- luacheck: globals G_technews_sources_prompted
+
+local Blitbuffer = require("ffi/blitbuffer")
+local ButtonTable = require("ui/widget/buttontable")
+local CenterContainer = require("ui/widget/container/centercontainer")
+local CheckButton = require("ui/widget/checkbutton")
+local Device = require("device")
 local Dispatcher = require("dispatcher")
+local Font = require("ui/font")
+local FrameContainer = require("ui/widget/container/framecontainer")
+local Geom = require("ui/geometry")
+local GestureRange = require("ui/gesturerange")
 local InfoMessage = require("ui/widget/infomessage")
+local InputContainer = require("ui/widget/container/inputcontainer")
+local MovableContainer = require("ui/widget/container/movablecontainer")
+local Size = require("ui/size")
+local TextBoxWidget = require("ui/widget/textboxwidget")
+local TextWidget = require("ui/widget/textwidget")
 local Trapper = require("ui/trapper")
 local UIManager = require("ui/uimanager")
+local VerticalGroup = require("ui/widget/verticalgroup")
+local VerticalSpan = require("ui/widget/verticalspan")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local logger = require("logger")
 
@@ -23,12 +42,11 @@ local http = require("technews.http")
 local imgurl = require("technews.imgurl")
 local rss = require("technews.rss")
 local storage = require("technews.storage")
+local subscriptions = require("technews.subscriptions")
 local window = require("technews.window")
 
-local SOURCES = {
-    require("technews.sources.ithome"),
-    require("technews.sources.leiphone"),
-}
+-- 全部可用订阅源（有序）；新增源只需在 sources/registry.lua 追加一行
+local registry = require("technews.sources.registry")
 
 -- 每期图片总量上限（安全阀：控制抓取时间与 EPUB 体积；每条默认取全部图片）
 local MAX_IMAGES_PER_ISSUE = 150
@@ -48,7 +66,7 @@ local function today_str()
 end
 
 local function source_by_id(id)
-    for _, source in ipairs(SOURCES) do
+    for _, source in ipairs(registry) do
         if source.id == id then return source end
     end
 end
@@ -65,6 +83,134 @@ local function image_ext(url)
         end
     end
     return "jpg"
+end
+
+-- 「选择订阅源」多选对话框（容器结构参照 KOReader 的 ConfirmBox）：
+-- CenterContainer > MovableContainer > FrameContainer > VerticalGroup
+--   （标题 + 提示 + 每源一个 CheckButton）+ ButtonTable（取消/确定）
+-- 点对话框外或按返回键 = 取消（不保存）
+local SourceSelectDialog = InputContainer:extend{
+    modal = true,
+    dismissable = true,
+    sources = nil,    -- 适配器数组（决定行数与顺序）
+    checked = nil,    -- { [source.id] = true } 初始勾选状态
+    on_confirm = nil, -- 确定回调，参数为勾选集合 { [id] = true }
+}
+
+function SourceSelectDialog:init()
+    local screen = Device.screen
+    local width = math.floor(math.min(screen:getWidth(), screen:getHeight()) * 2/3)
+
+    -- 每个登记源一个勾选项，初始状态即当前启用状态
+    self.check_buttons = {}
+    local source_list = VerticalGroup:new{ align = "left" }
+    for _, source in ipairs(self.sources) do
+        local button = CheckButton:new{
+            text = source.name,
+            checked = self.checked[source.id] == true,
+            parent = self,
+            width = width,
+        }
+        self.check_buttons[source.id] = button
+        table.insert(source_list, button)
+    end
+
+    local buttons = {{ -- 单行：取消 / 确定
+        {
+            text = "取消",
+            callback = function()
+                UIManager:close(self)
+            end,
+        },
+        {
+            text = "确定",
+            callback = function()
+                local set = {}
+                for id, button in pairs(self.check_buttons) do
+                    if button.checked then set[id] = true end
+                end
+                self.on_confirm(set)
+                UIManager:close(self)
+            end,
+        },
+    }}
+
+    local frame = FrameContainer:new{
+        background = Blitbuffer.COLOR_WHITE,
+        radius = Size.radius.window,
+        padding = Size.padding.default,
+        padding_bottom = 0, -- 底部不留白，由按钮行接管
+        VerticalGroup:new{
+            align = "left",
+            TextWidget:new{
+                text = "选择订阅源",
+                face = Font:getFace("infofont"),
+                bold = true,
+            },
+            VerticalSpan:new{ width = Size.span.vertical_default },
+            TextBoxWidget:new{
+                text = "之后可在「订阅源设置」里修改，点「确定」保存",
+                face = Font:getFace("smallinfofont"),
+                width = width,
+            },
+            VerticalSpan:new{ width = Size.padding.large },
+            source_list,
+            VerticalSpan:new{ width = Size.padding.large },
+            ButtonTable:new{
+                width = width,
+                buttons = buttons,
+                zero_sep = true,
+                show_parent = self,
+            },
+        },
+    }
+    self.movable = MovableContainer:new{ frame }
+    self[1] = CenterContainer:new{
+        dimen = screen:getSize(),
+        self.movable,
+    }
+
+    if self.dismissable then
+        if Device:isTouchDevice() then
+            self.ges_events.TapClose = {
+                GestureRange:new{
+                    ges = "tap",
+                    range = Geom:new{
+                        x = 0, y = 0,
+                        w = screen:getWidth(), h = screen:getHeight(),
+                    },
+                },
+            }
+        end
+        if Device:hasKeys() then
+            self.key_events.Close = { { Device.input.group.Back } }
+        end
+    end
+end
+
+function SourceSelectDialog:onTapClose(_, ges)
+    if ges.pos:notIntersectWith(self.movable.dimen) then
+        UIManager:close(self)
+    end
+    -- 不把点击传播给下层控件
+    return true
+end
+
+function SourceSelectDialog:onClose()
+    UIManager:close(self)
+    return true
+end
+
+function SourceSelectDialog:onShow()
+    UIManager:setDirty(self, function()
+        return "ui", self.movable.dimen
+    end)
+end
+
+function SourceSelectDialog:onCloseWidget()
+    UIManager:setDirty(nil, function()
+        return "ui", self.movable.dimen
+    end)
 end
 
 function TechNews:init()
@@ -91,6 +237,17 @@ function TechNews:autoRefreshEnabled()
     return G_reader_settings:readSetting("technews_auto_refresh") == true
 end
 
+--- 订阅源设置（nil = 用户尚未选择，按各源 default_enabled 默认启用）
+function TechNews:sourceSetting()
+    return G_reader_settings:readSetting("technews_sources")
+end
+
+--- 保存订阅源设置；启用集合变化后当天缓存作废，下次打开重建
+function TechNews:setSourceSetting(set)
+    G_reader_settings:saveSetting("technews_sources", set)
+    storage:clear_date(today_str())
+end
+
 --- 缓存是否已过期（需重抓）
 function TechNews:isCacheStale(source_id, date)
     if not self:autoRefreshEnabled() then return false end
@@ -110,63 +267,135 @@ function TechNews:addToMainMenu(menu_items)
 end
 
 function TechNews:getMenuItems()
-    return {
-        {
-            text = "IT之家 · 今日新闻",
+    local items = {}
+    -- 每个启用源一项（registry 顺序）
+    for _, source in ipairs(subscriptions.enabled(registry, self:sourceSetting())) do
+        items[#items + 1] = {
+            text = source.menu_label or (source.name .. " · 今日资讯"),
             keep_menu_open = false,
-            callback = function() self:openIssue("ithome") end,
-        },
-        {
-            text = "雷锋网 · 今日资讯",
-            keep_menu_open = false,
-            callback = function() self:openIssue("leiphone") end,
-        },
-        {
-            text = "合并 · 今日科技资讯",
-            keep_menu_open = false,
-            callback = function() self:openMergedIssue() end,
-        },
-        {
-            text = "包含图片",
+            callback = function() self:openIssue(source.id) end,
+        }
+    end
+    items[#items + 1] = {
+        text = "合并 · 今日科技资讯",
+        keep_menu_open = false,
+        callback = function() self:openMergedIssue() end,
+    }
+    items[#items + 1] = {
+        text = "订阅源设置",
+        keep_menu_open = true,
+        sub_item_table_func = function()
+            return self:getSourceSettingItems()
+        end,
+    }
+    items[#items + 1] = {
+        text = "包含图片",
+        keep_menu_open = true,
+        check_callback_updates_menu = true,
+        checked_func = function() return self:withImages() end,
+        callback = function()
+            G_reader_settings:saveSetting("technews_with_images",
+                not self:withImages())
+            -- 切换后当天缓存作废，下次打开重新生成
+            storage:clear_date(today_str())
+        end,
+    }
+    items[#items + 1] = {
+        text = "缓存 6 小时后自动更新",
+        keep_menu_open = true,
+        checked_func = function() return self:autoRefreshEnabled() end,
+        callback = function()
+            G_reader_settings:saveSetting("technews_auto_refresh",
+                not self:autoRefreshEnabled())
+        end,
+    }
+    items[#items + 1] = {
+        text = "重新抓取今日",
+        keep_menu_open = false,
+        callback = function() self:confirmRefetch() end,
+    }
+    items[#items + 1] = {
+        text = "清理全部缓存",
+        keep_menu_open = false,
+        callback = function() self:confirmClearCache() end,
+    }
+    items[#items + 1] = {
+        text = "关于",
+        keep_menu_open = true,
+        callback = function()
+            UIManager:show(InfoMessage:new{
+                text = "科技资讯订阅 v0.1\n\n作者：Isword先生\n数据来源：IT之家 · 雷锋网\n内容仅供个人阅读学习。",
+            })
+        end,
+    }
+
+    -- 首次打开菜单：引导选择订阅源（全局标记防 dofile 重载后重复弹出）
+    if self:sourceSetting() == nil and not G_technews_sources_prompted then
+        G_technews_sources_prompted = true
+        UIManager:scheduleIn(0.2, function()
+            self:promptSourceSelection()
+        end)
+    end
+    return items
+end
+
+--- 「订阅源设置」子菜单：每个登记源一个勾选项（勾选即生效并清今日缓存）
+function TechNews:getSourceSettingItems()
+    local items = {}
+    for _, source in ipairs(registry) do
+        items[#items + 1] = {
+            text = source.name,
             keep_menu_open = true,
             check_callback_updates_menu = true,
-            checked_func = function() return self:withImages() end,
-            callback = function()
-                G_reader_settings:saveSetting("technews_with_images",
-                    not self:withImages())
-                -- 切换后当天缓存作废，下次打开重新生成
-                storage:clear_date(today_str())
+            checked_func = function()
+                return subscriptions.is_enabled(source, self:sourceSetting())
             end,
-        },
-        {
-            text = "缓存 6 小时后自动更新",
-            keep_menu_open = true,
-            checked_func = function() return self:autoRefreshEnabled() end,
-            callback = function()
-                G_reader_settings:saveSetting("technews_auto_refresh",
-                    not self:autoRefreshEnabled())
+            callback = function(touchmenu_instance)
+                -- 以当前启用集合为基准翻转本项，另存为新集合
+                local ids = {}
+                for _, adapter in ipairs(subscriptions.enabled(registry, self:sourceSetting())) do
+                    ids[#ids + 1] = adapter.id
+                end
+                local set = subscriptions.to_set(ids)
+                if set[source.id] then
+                    set[source.id] = nil
+                else
+                    set[source.id] = true
+                end
+                self:setSourceSetting(set)
+                if touchmenu_instance then
+                    touchmenu_instance:updateItems()
+                end
             end,
-        },
-        {
-            text = "重新抓取今日",
-            keep_menu_open = false,
-            callback = function() self:confirmRefetch() end,
-        },
-        {
-            text = "清理全部缓存",
-            keep_menu_open = false,
-            callback = function() self:confirmClearCache() end,
-        },
-        {
-            text = "关于",
-            keep_menu_open = true,
-            callback = function()
-                UIManager:show(InfoMessage:new{
-                    text = "科技资讯订阅 v0.1\n\n作者：Isword先生\n数据来源：IT之家 · 雷锋网\n内容仅供个人阅读学习。",
-                })
-            end,
-        },
+        }
+    end
+    items[#items + 1] = {
+        text = "勾选即生效；改动会清除今日缓存",
+        enabled = false,
     }
+    return items
+end
+
+--- 首次使用引导：多选订阅源（确定后保存，取消不保存）
+function TechNews:promptSourceSelection()
+    local setting = self:sourceSetting()
+    local checked = {}
+    for _, source in ipairs(registry) do
+        if subscriptions.is_enabled(source, setting) then
+            checked[source.id] = true
+        end
+    end
+    UIManager:show(SourceSelectDialog:new{
+        sources = registry,
+        checked = checked,
+        on_confirm = function(set)
+            self:setSourceSetting(set)
+            UIManager:show(InfoMessage:new{
+                text = "订阅源已保存",
+                timeout = 2,
+            })
+        end,
+    })
 end
 
 function TechNews:onDispatcherRegisterActions()
@@ -399,8 +628,17 @@ function TechNews:openIssue(source_id)
     end)
 end
 
---- 打开两源合并的今日资讯
+--- 打开已启用源的合并今日资讯
 function TechNews:openMergedIssue()
+    local sources = subscriptions.enabled(registry, self:sourceSetting())
+    if #sources == 0 then
+        UIManager:scheduleIn(0.1, function()
+            UIManager:show(InfoMessage:new{
+                text = "请先在「订阅源设置」中选择至少一个新闻源",
+            })
+        end)
+        return
+    end
     local date = today_str()
     if storage:epub_exists("merged", date)
         and not self:isCacheStale("merged", date) then
@@ -412,9 +650,9 @@ function TechNews:openMergedIssue()
         local all_images = {}
         local failed = {}
         local image_budget = MAX_IMAGES_PER_ISSUE
-        for i, source in ipairs(SOURCES) do
+        for i, source in ipairs(sources) do
             local bundle, err = self:fetchSource(source, source.merge_max_items,
-                { source_index = i, source_count = #SOURCES,
+                { source_index = i, source_count = #sources,
                   image_budget = image_budget })
             if bundle then
                 -- 合并期图片上限跨源共享：按实际下载数扣减剩余额度

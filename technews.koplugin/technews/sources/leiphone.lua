@@ -11,4 +11,5 @@ return {
     mode = "summary",       -- 直接用 RSS 描述（含完整 HTML 与图片）
     max_items = 20,         -- 单独阅读时的条数
     merge_max_items = 10,   -- 合并视图中的条数
+    default_enabled = true, -- 默认启用（用户可在「订阅源设置」里修改）
 }
