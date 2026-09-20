@@ -182,7 +182,13 @@ end
 
 --- 抓取一个源。必须在 Trapper:wrap 协程内调用。
 -- @return { items = {...}, images = { [url]= {data=, ext=} } } 或 (nil, 错误)
-function TechNews:fetchSource(source, limit)
+function TechNews:fetchSource(source, limit, progress)
+    -- 合并模式下显示来源进度前缀（单源时为空串）
+    local prefix = ""
+    if progress and progress.source_count and progress.source_count > 1 then
+        prefix = string.format("来源 %d/%d · ",
+            progress.source_index, progress.source_count)
+    end
     local xml, err = http.get(source.feed)
     if not xml then
         return nil, err
@@ -210,8 +216,8 @@ function TechNews:fetchSource(source, limit)
     -- 1) 组装内容块（文字 + 图片，保持顺序）
     if source.mode == "fulltext" then
         for i, item in ipairs(result) do
-            local msg = string.format("抓取 %s 全文 %d/%d…（点击可取消）",
-                source.name, i, #result)
+            local msg = string.format("%s抓取 %s 全文 %d/%d…（点击可取消）",
+                prefix, source.name, i, #result)
             if not Trapper:info(msg) then
                 return nil, "已取消"
             end
@@ -263,7 +269,8 @@ function TechNews:fetchSource(source, limit)
         local total = math.min(#pending, MAX_IMAGES_PER_ISSUE)
         for i = 1, total do
             local url = pending[i].url
-            local msg = string.format("下载图片 %d/%d…（点击可取消）", i, total)
+            local msg = string.format("%s下载图片 %d/%d…（点击可取消）",
+                prefix, i, total)
             if not Trapper:info(msg) then
                 break
             end
@@ -379,8 +386,9 @@ function TechNews:openMergedIssue()
         local all = {}
         local all_images = {}
         local failed = {}
-        for _, source in ipairs(SOURCES) do
-            local bundle, err = self:fetchSource(source, source.merge_max_items)
+        for i, source in ipairs(SOURCES) do
+            local bundle, err = self:fetchSource(source, source.merge_max_items,
+                { source_index = i, source_count = #SOURCES })
             if bundle then
                 for _, item in ipairs(bundle.items) do
                     all[#all + 1] = item
