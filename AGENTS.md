@@ -7,9 +7,10 @@
 
 - 项目：`technews.koplugin`，个人自用的 KOReader 插件。多源 RSS/网页 → 内容块（文字+图片）→ 整期 EPUB → KOReader 原生阅读器
 - 核心链路可用：单源/合并、缓存、图片开关、菜单与手势入口都已就位
-- 仓库仅本地：分支 `main`，**无 remote**，基线提交 `4c962b0`（2026-09-20）
+- 仓库仅本地：分支 `main`，**无 remote**；2026-09-20 共 9 个提交（基线 `4c962b0`，B 段体验打磨已完成）
 - 模拟器插件副本与源码逐字一致（2026-09-20，`diff -rq` 通过）
-- 测试与 lint 基建已就位：`spec/window_spec.lua`（36 项断言全绿）、`scripts/run_specs.sh`、`.luacheckrc`（0 warning），命令见 §5
+- 测试与 lint 基建已就位：4 个 spec（123 项断言全绿：window/dedupe/imgurl/epub）、`scripts/run_specs.sh`、`.luacheckrc`（0 warning），命令见 §5
+- B 段体验打磨 5/5 完成（进度细分、两源去重、图片瘦身、目录层级化）；摘要模式补全经调研取消（IT之家 RSS 描述即全文）
 - 待办与已知问题见 §6
 
 ## 1. 目录地图
@@ -147,7 +148,7 @@ rsync -a --delete \
 ```bash
 cd /Users/isword/DEV/Workspace/KOPlugin/technews
 
-bash scripts/run_specs.sh        # Lua 规格测试（window.lua 窗口过滤，36 项断言）
+bash scripts/run_specs.sh        # Lua 规格测试（4 个 spec 文件，123 项断言）
 luacheck technews.koplugin spec  # 静态检查（应为 0 warning / 0 error）
 ```
 
@@ -155,25 +156,21 @@ luacheck technews.koplugin spec  # 静态检查（应为 0 warning / 0 error）
 
 ## 6. 已知问题与取舍
 
-每条都注明文件位置，方便定位。多数来自 2026-09-20 审计，尚未修复。
+每条都注明文件位置，方便定位。以下为仍待处理的问题。
 
 1. **构建内存风险**（`technews/epub.lua:44-68`）：整期内容常驻内存；`make_zip` 用 `table.concat` 把所有条目（含图片二进制）拼成一整块 zip 字符串，峰值约为图片字节数的 2 倍。低内存 Kindle 上有隐患。（2026-09-20 图片瘦身后载荷显著下降，峰值随之缓解；流式构建仍未做。）
 2. **CRC32 纯 Lua 逐字节循环**（`technews/epub.lua:11-32`）：对整期图片载荷逐字节运算（IT之家图片缩放宽 800 后显著变小），真机上可能造成构建卡顿；需要基准测试。
-3. **取消语义不一致**（`main.lua`）：
-   - 全文抓取阶段取消（`main.lua:215`）：直接 `return nil, "已取消"`，整期中止
-   - 图片下载阶段取消（`main.lua:267`）：仅 `break` 跳出，随后仍用已下载的部分图片出刊，且不提示用户
-4. **合并图片上限翻倍**（`main.lua:32,263`）：`MAX_IMAGES_PER_ISSUE = 50` 是「每个源」的上限；合并视图两源各取 50，最多约 100 张。而 `TODO.md` 记的是「单期上限 50 张」。
-5. **清理不一致**（`technews/storage.lua:44-69` 对比 `98-119`）：`cleanup()` 会连带删 `.sdr` 阅读状态，但 `clear_date()`/`clear_all()` 只删 `.epub`。切换「包含图片」重建 EPUB 后旧 `.sdr` 会残留。
-6. **死代码**（`technews/extract.lua:33`、`technews/htmltext.lua:39`）：`extract.paragraphs` 与 `htmltext.paragraphs` 无调用者。（`epub.lua` 里的局部 `paragraphs_html` 是另一个函数，仍在用。）
-7. **版本号漂移**（`main.lua:37` 对比 `163`）：`version` 字段是 `"0.1.0"`，「关于」弹窗却写 `v0.1`。
-8. **CNBeta 域名重定向**（2026-09-20 发现，`technews/sources/cnbeta.lua`）：`www.cnbeta.com.tw` 全站（含旧 feed `backend.php` 与文章页）在境外出口 IP 下 302 跳转 MSN。旧 feed 已不可用，现改用 `https://rss.cnbeta.com.tw/`（内容同源、描述更全约 360 字 HTML）。境外网络（含本机模拟器）下文章页抓取会快速失败并回退到 RSS 描述；国内直连真机预期正常，**待真机确认**。
+3. **版本号漂移**（`main.lua:37` 对比 `163`）：`version` 字段是 `"0.1.0"`，「关于」弹窗却写 `v0.1`。
+4. **CNBeta 域名重定向**（2026-09-20 发现，`technews/sources/cnbeta.lua`）：`www.cnbeta.com.tw` 全站（含旧 feed `backend.php` 与文章页）在境外出口 IP 下 302 跳转 MSN。旧 feed 已不可用，现改用 `https://rss.cnbeta.com.tw/`（内容同源、描述更全约 360 字 HTML）。境外网络（含本机模拟器）下文章页抓取会快速失败并回退到 RSS 描述；国内直连真机预期正常，**待真机确认**。
+
+2026-09-20 已修复并验证（详见 git log）：取消语义统一（取消 = 整期中止 + 中性提示）、合并期图片上限跨源共享 50、`clear_date`/`clear_all` 同步清理 `.sdr`、删除无调用方的 `paragraphs` 链。
 
 ### TODO.md 状态摘要
 
 以 `technews.koplugin/TODO.md` 为活清单，这里只做概览，不逐条重抄：
 
 - **A 先做**（封面、缓存自动清理、图片开关即时生效、错误提示友好化、缓存过期自动更新）：5/5 完成
-- **B 体验打磨**（今日时间窗口、抓取进度细分、两源去重、图片瘦身、目录层级化、摘要模式补全）：4/6 完成（今日时间窗口、抓取进度细分、两源去重、图片瘦身已做），其余待办
+- **B 体验打磨**（今日时间窗口、抓取进度细分、两源去重、图片瘦身、目录层级化）：5/5 完成；摘要模式补全经调研取消（IT之家 RSS 描述即全文，见 §6 取舍记录）
 - **C 成品化**（设置集中、真机验证、失败降级策略、版本化打包、i18n）：0/5 待办
 - 末尾「已知取舍记录」记有：今日定义、时区（两家 RSS 的 pubDate 是真 GMT）、图片策略、CNBeta 逐篇抓取、合并条数、自测钩子
 
