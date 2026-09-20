@@ -46,10 +46,10 @@
 
 ### 来源
 
-| 源 | id | 模式 | feed | 单源条数 | 合并条数 | 回补阈值 | 每条图片 |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| IT之家 | `ithome` | summary（RSS 描述已含完整 HTML） | https://www.ithome.com/rss/ | 60 | 30 | 15 | 全部 |
-| CNBeta | `cnbeta` | fulltext（逐篇抓文章页，失败回退描述） | https://rss.cnbeta.com.tw/ | 25 | 12 | 10 | 全部 |
+| 源 | id | 模式 | feed | 单源条数 | 合并条数 | 每条图片 |
+| --- | --- | --- | --- | --- | --- | --- |
+| IT之家 | `ithome` | summary（RSS 描述已含完整 HTML） | https://www.ithome.com/rss/ | 60 | 30 | 全部 |
+| CNBeta | `cnbeta` | fulltext（逐篇抓文章页，失败回退描述） | https://rss.cnbeta.com.tw/ | 25 | 12 | 全部 |
 
 - 合并模式：两源混排，按时间戳倒序（无时间的排最后），`issue_id = "merged"`
 - 合并时某源失败不致命：记录警告，只要还有条目就照常出刊
@@ -84,8 +84,8 @@
 
 ###「今日」语义
 
-- 本地 0 点起（`window.local_midnight_ts`）的条目优先；不足 `min_items` 时向前回补
-- 结果按时间戳倒序；无时间戳的条目视为最新
+- 严格本地 0 点起（`window.local_midnight_ts`）：只取当日条目，不回补旧闻（2026-09-20 用户决定）
+- 结果按时间戳倒序；无时间戳的条目视为当日
 
 ### 缓存
 

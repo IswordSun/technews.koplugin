@@ -199,11 +199,10 @@ function TechNews:fetchSource(source, limit, progress)
     if #items == 0 then
         return nil, "没有解析到条目"
     end
-    -- 今日窗口：0 点起 + 不足时向前回补
-    local result, n_today = window.filter(
-        items, limit or source.max_items, source.min_items)
+    -- 今日窗口：严格本地 0 点起（不回补旧条目）
+    local result, n_today = window.filter(items, limit or source.max_items)
     if #result == 0 then
-        return nil, "没有可用的条目"
+        return nil, "今日暂无新条目"
     end
     logger.info("technews window:",
         source.id,

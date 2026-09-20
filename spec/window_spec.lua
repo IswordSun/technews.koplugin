@@ -1,5 +1,6 @@
 -- spec/window_spec.lua — technews「今日窗口」过滤逻辑的单元测试
 --
+-- 严格语义：只取本地今日 0 点起的条目，不回补旧条目（2026-09-20 起）。
 -- 运行方式：bash scripts/run_specs.sh（或直接 luajit spec/window_spec.lua）
 -- 不依赖任何测试框架；所有断言通过时退出码为 0，否则为 1。
 
@@ -44,12 +45,12 @@ local function eq_ids(actual, expected, name)
     ok(same, name, ("expected=%s actual=%s"):format(join(expected_ids), join(actual_ids)))
 end
 
--- 用 ts 构造条目；ts 为 nil 时表示"无时间戳（视为最新）"
+-- 用 ts 构造条目；ts 为 nil 时表示"无时间戳（视为今日）"
 local function item(ts, id)
     return { ts = ts, id = id or tostring(ts) }
 end
 
--- 统计结果中位于本地 0 点之前的条目数（即回补条数）
+-- 统计结果中位于本地 0 点之前的条目数（严格模式下应恒为 0）
 local function count_older(items, midnight)
     local n = 0
     for _, it in ipairs(items) do
@@ -86,79 +87,49 @@ do
         item(midnight + 3600, "a"),
         item(midnight + 7200, "b"),
         item(midnight + 1800, "c"),
-        item(midnight - 60, "old"), -- 旧条目，今日已达 min_items，不应被回补
     }
-    local selected, n_today = window.filter(items, 10, 3)
+    local selected, n_today = window.filter(items, 10)
     eq(n_today, 3, "全部为今日条目时 n_today 等于今日条数")
-    eq(#selected, 3, "今日条数达到 min_items 时只返回今日条目")
+    eq(#selected, 3, "全部为今日条目时全部返回")
     eq_ids(selected, { "b", "a", "c" }, "今日条目按 ts 倒序返回")
 end
 
 ----------------------------------------------------------------------
--- 今日不足 min_items：向前回补旧条目
-----------------------------------------------------------------------
-do
-    local mixed = {
-        item(midnight - 10800, "o3"),
-        item(midnight + 120, "t1"),
-        item(midnight - 3600, "o1"),
-        item(midnight + 60, "t2"),
-        item(midnight - 7200, "o2"),
-        item(midnight - 14400, "o4"),
-        item(midnight - 18000, "o5"),
-    }
-    local selected, n_today = window.filter(mixed, 100, 5)
-    eq(n_today, 2, "回补场景中 n_today 只统计今日条目")
-    eq(#selected, 5, "今日不足 min_items 且旧条目充足时回补到 min_items")
-    eq_ids(selected, { "t1", "t2", "o1", "o2", "o3" }, "回补后整体仍按 ts 倒序")
-end
-
-----------------------------------------------------------------------
--- 回补恰好停在 min_items，不会多补
+-- 严格模式：今日只有 2 条时也不回补旧条目
 ----------------------------------------------------------------------
 do
     local items = {
-        item(midnight + 30, "t1"),
-        item(midnight + 20, "t2"),
-        item(midnight + 10, "t3"),
+        item(midnight + 120, "t1"),
+        item(midnight + 60, "t2"),
     }
     for i = 1, 10 do items[#items + 1] = item(midnight - i * 600, "o" .. i) end
-    local selected, n_today = window.filter(items, 100, 5)
-    eq(#selected, 5, "回补恰好停在 min_items（3 今日 + 2 回补）")
-    eq(n_today, 3, "回补后 n_today 仍为 3")
-    eq(count_older(selected, midnight), 2, "只回补 min_items - n_today 条旧条目")
-
-    -- 完全没有今日条目时同样精确回补
-    local only_older = {}
-    for i = 1, 10 do only_older[#only_older + 1] = item(midnight - i * 600, "x" .. i) end
-    selected, n_today = window.filter(only_older, 100, 4)
-    eq(#selected, 4, "无今日条目时回补恰好 min_items 条")
-    eq(n_today, 0, "无今日条目时 n_today = 0")
-    eq_ids(selected, { "x1", "x2", "x3", "x4" }, "回补的旧条目仍按 ts 倒序")
+    local selected, n_today = window.filter(items, 100)
+    eq(n_today, 2, "严格模式 n_today 只统计今日条目")
+    eq(#selected, 2, "今日只有 2 条、旧条目有 10 条时结果仍为 2 条（不回补）")
+    eq_ids(selected, { "t1", "t2" }, "结果只含今日条目且按 ts 倒序")
+    eq(count_older(selected, midnight), 0, "结果中不含任何 0 点之前的旧条目")
 end
 
 ----------------------------------------------------------------------
--- max_items 截断
+-- 严格模式：完全没有今日条目时不回补，返回空
 ----------------------------------------------------------------------
 do
     local items = {}
-    for i = 1, 5 do items[i] = item(midnight + i * 60, "t" .. i) end
-    local selected, n_today = window.filter(items, 3, 5)
-    eq(#selected, 3, "可用条目多于 max_items 时按 max_items 截断")
-    eq(n_today, 5, "截断后 n_today 仍为未截断的今日条数")
-    eq_ids(selected, { "t5", "t4", "t3" }, "截断保留最新的 max_items 条")
+    for i = 1, 10 do items[i] = item(midnight - i * 600, "o" .. i) end
+    local selected, n_today = window.filter(items, 100)
+    eq(#selected, 0, "只有旧条目时返回空列表（不回补）")
+    eq(n_today, 0, "只有旧条目时 n_today = 0")
+end
 
-    -- 截断发生在回补之后
-    local mixed = {
-        item(midnight + 60, "t1"),
-        item(midnight - 60, "o1"),
-        item(midnight - 120, "o2"),
-        item(midnight - 180, "o3"),
-    }
-    selected, n_today = window.filter(mixed, 2, 4)
-    eq(#selected, 2, "先回补到 min_items，再按 max_items 截断")
-    eq(n_today, 1, "回补-截断场景 n_today 不受影响")
-    eq_ids(selected, { "t1", "o1" }, "截断后保留最新条目")
+----------------------------------------------------------------------
+-- 边界：ts 恰好等于本地 0 点算今日；0 点前 1 秒被排除
+----------------------------------------------------------------------
+do
+    local m = window.local_midnight_ts() -- 紧邻调用前取值，避免跨午夜时用到过期值
+    local items = { item(m, "exact"), item(m - 1, "just_before"), item(m + 1, "just_after") }
+    local selected, n_today = window.filter(items, 10)
+    eq(n_today, 2, "恰好 0 点算今日，0 点前 1 秒不算")
+    eq_ids(selected, { "just_after", "exact" }, "恰好 0 点的条目被选中，前 1 秒被排除")
 end
 
 ----------------------------------------------------------------------
@@ -170,59 +141,57 @@ do
         item(nil, "no_ts"), -- 无 ts：视为最新（今日）
         item(midnight - 60, "old"),
     }
-    local selected, n_today = window.filter(items, 10, 2)
+    local selected, n_today = window.filter(items, 10)
     eq(n_today, 2, "无 ts 的条目计入今日条数")
-    eq(#selected, 2, "无 ts 条目计入今日后可满足 min_items，不再回补旧条目")
-    -- 排序键 (ts or 0) 使无 ts 条目排在有 ts 的今日条目之后
     eq_ids(selected, { "t1", "no_ts" }, "无 ts 条目进入今日集合（排序值视作 0，位于最后）")
+    eq(count_older(selected, midnight), 0, "旧条目被排除")
 end
 
 ----------------------------------------------------------------------
--- ts 恰好等于本地 0 点：算作今日（边界含等号）
+-- 混合排序：有 ts 的今日条目在前，无 ts 的条目在后
 ----------------------------------------------------------------------
 do
-    local m = window.local_midnight_ts() -- 紧邻调用前取值，避免跨午夜时用到过期值
-    local items = { item(m, "exact"), item(m - 1, "just_before") }
-    local selected, n_today = window.filter(items, 10, 1)
-    eq(n_today, 1, "ts 恰好等于本地 0 点算作今日")
-    eq_ids(selected, { "exact" }, "恰好 0 点的条目被选中，且不额外回补更旧条目")
+    local items = {
+        item(nil, "n1"),
+        item(midnight + 60, "t1"),
+        item(nil, "n2"),
+        item(midnight + 120, "t2"),
+    }
+    local selected, n_today = window.filter(items, 10)
+    eq(n_today, 4, "有 ts 与无 ts 的今日条目都计入 n_today")
+    eq_ids({ selected[1], selected[2] }, { "t2", "t1" }, "有 ts 条目按 ts 倒序排在最前")
+    ok(selected[3].ts == nil and selected[4].ts == nil,
+        "无 ts 条目排在有 ts 条目之后",
+        ("ids=%s,%s"):format(selected[3].id, selected[4].id))
+end
 
-    m = window.local_midnight_ts()
-    items = { item(m, "exact"), item(m - 1, "just_before") }
-    selected, n_today = window.filter(items, 10, 2)
-    eq(n_today, 1, "边界条目仍只计 1 条今日")
-    eq_ids(selected, { "exact", "just_before" }, "min_items=2 时前一天的条目被回补")
+----------------------------------------------------------------------
+-- max_items 截断（截断只发生在今日集合内）
+----------------------------------------------------------------------
+do
+    local items = {}
+    for i = 1, 5 do items[i] = item(midnight + i * 60, "t" .. i) end
+    local selected, n_today = window.filter(items, 3)
+    eq(#selected, 3, "可用条目多于 max_items 时按 max_items 截断")
+    eq(n_today, 5, "截断后 n_today 仍为未截断的今日条数")
+    eq_ids(selected, { "t5", "t4", "t3" }, "截断保留最新的 max_items 条")
+
+    -- 混入旧条目时也只截断今日条目，旧条目不会顶上
+    local mixed = { item(midnight + 60, "t1"), item(midnight + 30, "t2") }
+    for i = 1, 10 do mixed[#mixed + 1] = item(midnight - i * 600, "o" .. i) end
+    selected, n_today = window.filter(mixed, 1)
+    eq(#selected, 1, "有旧条目时截断仍只作用于今日集合")
+    eq(n_today, 2, "截断后 n_today 不受影响")
+    eq_ids(selected, { "t1" }, "截断保留最新的今日条目")
 end
 
 ----------------------------------------------------------------------
 -- 空输入
 ----------------------------------------------------------------------
 do
-    local selected, n_today = window.filter({}, 10, 12)
+    local selected, n_today = window.filter({}, 10)
     eq(#selected, 0, "空输入返回空列表")
     eq(n_today, 0, "空输入 n_today = 0")
-
-    selected, n_today = window.filter({}, 10)
-    eq(#selected, 0, "空输入且省略 min_items 时仍返回空列表")
-    eq(n_today, 0, "空输入且省略 min_items 时 n_today = 0")
-end
-
-----------------------------------------------------------------------
--- 省略 min_items 时默认值为 12
-----------------------------------------------------------------------
-do
-    local items = { item(midnight + 60, "t1"), item(midnight + 30, "t2") }
-    for i = 1, 20 do items[#items + 1] = item(midnight - i * 600, "o" .. i) end
-    local selected, n_today = window.filter(items, 100)
-    eq(#selected, 12, "省略 min_items 时默认回补到 12 条")
-    eq(n_today, 2, "默认回补场景 n_today = 2")
-
-    -- 今日条目已超过默认值时既不回补也不被默认值截断
-    local many = {}
-    for i = 1, 15 do many[i] = item(midnight + i * 60, "m" .. i) end
-    selected, n_today = window.filter(many, 100)
-    eq(#selected, 15, "今日条数超过默认 min_items 时不回补、不截断")
-    eq(n_today, 15, "今日条数超过默认 min_items 时 n_today = 15")
 end
 
 ----------------------------------------------------------------------
