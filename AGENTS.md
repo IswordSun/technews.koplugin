@@ -9,9 +9,9 @@
 - 核心链路可用：单源/合并、缓存、图片开关、菜单与手势入口都已就位（当前源：IT之家 + 雷锋网）
 - 仓库仅本地：分支 `main`，**无 remote**；2026-09-20 完成基建与 B 段体验打磨（基线提交 `4c962b0`，后续改动见 git log）
 - 模拟器插件副本与源码逐字一致（2026-09-20，`diff -rq` 通过）
-- 测试与 lint 基建已就位：5 个 spec（147 项断言全绿：window/dedupe/imgurl/epub/subscriptions）、`scripts/run_specs.sh`、`.luacheckrc`（0 warning），命令见 §5
+- 测试与 lint 基建已就位：7 个 spec（224 项断言全绿：window/dedupe/imgurl/epub/subscriptions/htmltext/rss）、`scripts/run_specs.sh`、`.luacheckrc`（0 warning），命令见 §5
 - B 段体验打磨 5/5 完成（进度细分、两源去重、图片瘦身、目录层级化）；摘要模式补全经调研取消（IT之家 RSS 描述即全文）
-- 订阅源体系已上线：首次打开多选订阅源、可在「订阅源设置」调整；菜单/合并按启用源动态化（待接入：爱范儿、极客公园、Solidot、少数派）
+- 订阅源体系已上线：首次打开多选订阅源、可在「订阅源设置」调整；已内置 6 个源（爱范儿/极客公园/Solidot/少数派 默认停用）
 - 待办与已知问题见 §6
 
 ## 1. 目录地图
@@ -21,7 +21,7 @@
 ├── AGENTS.md                                       ← 本文件
 ├── .gitignore                                      ← 忽略 .DS_Store、*.part
 ├── .omo/                                           ← opencode 运行态，非源码
-├── spec/                                           ← Lua 规格测试（5 个 spec），dev-only 不部署
+├── spec/                                           ← Lua 规格测试（7 个 spec），dev-only 不部署
 ├── scripts/                                        ← run_specs.sh，dev-only 不部署
 └── technews.koplugin/                              ← 运行时插件（逐字镜像到模拟器/真机）
     ├── main.lua                                    ← 入口、菜单、抓取编排、设置
@@ -38,7 +38,9 @@
         ├── window.lua                              ←「今日」时间窗口
         └── sources/                                ← 源适配器与注册表
             ├── registry.lua                        ← 源登记处（新增源只加一行）
-            └── {ithome,leiphone}.lua               ← 已启用源（cnbeta.lua 停用保留）
+            ├── {ithome,leiphone}.lua               ← 默认启用
+            ├── {ifanr,geekpark,solidot,sspai}.lua  ← 可选源（默认停用）
+            └── cnbeta.lua                          ← 停用保留
 ```
 
 关键分界：**只有 `technews.koplugin/` 会被部署**；`spec/`、`scripts/`、`AGENTS.md`、`.omo/`、`.git/` 都留在仓库里。
@@ -54,10 +56,17 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | IT之家 | `ithome` | summary（RSS 描述已含完整 HTML） | https://www.ithome.com/rss/ | 60 | 30 | 全部 |
 | 雷锋网 | `leiphone` | summary（RSS 描述即完整正文） | https://www.leiphone.com/feed | 20 | 10 | 全部 |
+| 爱范儿 | `ifanr` | summary（正文在 content:encoded） | https://www.ifanr.com/feed | 20 | 10 | 全部 |
+| 极客公园 | `geekpark` | summary（RSS 描述即完整正文） | https://www.geekpark.net/rss | 30 | 12 | 全部 |
+| Solidot | `solidot` | summary（描述即正文，无图） | https://www.solidot.org/index.rss | 20 | 10 | 全部 |
+| 少数派 | `sspai` | fulltext（描述为摘要，逐篇抓正文） | https://sspai.com/feed | 10 | 5 | 全部 |
+
+前两行默认启用；后四行默认停用，在「订阅源设置」勾选（顺序随 `registry.lua`）。
 
 - 合并模式：两源混排，按时间戳倒序（无时间的排最后），`issue_id = "merged"`
 - 合并时某源失败不致命：记录警告，只要还有条目就照常出刊
 - 两家均为单次请求（RSS 描述即完整正文/含图），无需逐篇抓取；CNBeta 因 .tw 域名境外 302→MSN、大陆不翻墙不可达已停用（适配器保留，见 §6）
+- 解析/抽取升级（2026-09-20）：`rss.lua` 优先取 `content:encoded`（爱范儿类）；`htmltext.blocks` 同时收录 `<figure>` 与独立 `<img>`（少数派/极客公园）；少数派图片需带 Referer（`http.get` 的 `opts.referer` + `imgurl.referer`）
 
 ### 菜单（主菜单 → 科技资讯订阅）
 
@@ -155,7 +164,7 @@ rsync -a --delete \
 ```bash
 cd /Users/isword/DEV/Workspace/KOPlugin/technews
 
-bash scripts/run_specs.sh        # Lua 规格测试（5 个 spec 文件，147 项断言）
+bash scripts/run_specs.sh        # Lua 规格测试（7 个 spec 文件，224 项断言）
 luacheck technews.koplugin spec  # 静态检查（应为 0 warning / 0 error）
 ```
 
@@ -168,7 +177,7 @@ luacheck technews.koplugin spec  # 静态检查（应为 0 warning / 0 error）
 1. **构建内存风险**（`technews/epub.lua:44-68`）：整期内容常驻内存；`make_zip` 用 `table.concat` 把所有条目（含图片二进制）拼成一整块 zip 字符串，峰值约为图片字节数的 2 倍。低内存 Kindle 上有隐患。（2026-09-20 图片经 CDN 缩放宽 800 后单张显著变小，但每条已放开为全量图片，峰值仍随图片张数增长；流式构建未做。）
 2. **CRC32 纯 Lua 逐字节循环**（`technews/epub.lua:11-32`）：对整期图片载荷逐字节运算（IT之家图片缩放宽 800 后显著变小），真机上可能造成构建卡顿；需要基准测试。
 3. **版本号漂移**（`main.lua:37` 对比 `163`）：`version` 字段是 `"0.1.0"`，「关于」弹窗却写 `v0.1`。
-2026-09-20 已修复并验证（详见 git log）：取消语义统一（取消 = 整期中止 + 中性提示）、合并期图片上限跨源共享（当前 150）、`clear_date`/`clear_all` 同步清理 `.sdr`、删除无调用方的 `paragraphs` 链；CNBeta 因 .tw 域名境外 302→MSN、大陆不翻墙不可达而停用，第二个源改为雷锋网（适配器保留，可再启用）；订阅源选择框架上线（首次多选弹窗、订阅源设置子菜单、菜单与合并按启用源动态化）。
+2026-09-20 已修复并验证（详见 git log）：取消语义统一（取消 = 整期中止 + 中性提示）、合并期图片上限跨源共享（当前 150）、`clear_date`/`clear_all` 同步清理 `.sdr`、删除无调用方的 `paragraphs` 链；CNBeta 因 .tw 域名境外 302→MSN、大陆不翻墙不可达而停用，第二个源改为雷锋网（适配器保留，可再启用）；订阅源选择框架上线（首次多选弹窗、订阅源设置子菜单、菜单与合并按启用源动态化）；阶段二接入 4 个新源并升级三处核心：`rss` 支持 `content:encoded`、抽取器支持 `<figure>`/独立图片、按图床携带 Referer（少数派必需、微信图床禁用）。
 
 ### TODO.md 状态摘要
 
@@ -177,7 +186,7 @@ luacheck technews.koplugin spec  # 静态检查（应为 0 warning / 0 error）
 - **A 先做**（封面、缓存自动清理、图片开关即时生效、错误提示友好化、缓存过期自动更新）：5/5 完成
 - **B 体验打磨**（今日时间窗口、抓取进度细分、两源去重、图片瘦身、目录层级化）：5/5 完成；摘要模式补全经调研取消（IT之家 RSS 描述即全文，见 §6 取舍记录）
 - **C 成品化**（设置集中、真机验证、失败降级策略、版本化打包、i18n）：0/5 待办
-- **D 订阅源体系**（2026-09-20 起）：选择框架已完成；待接入源：爱范儿、极客公园、Solidot、少数派
+- **D 订阅源体系**（2026-09-20 起）：选择框架 + 4 个新源（爱范儿/极客公园/Solidot/少数派，默认停用）均已完成；后续继续加源（研究 → 适配器 → 实测 → 单测）
 - 末尾「已知取舍记录」记有：今日定义、时区（RSS 的 pubDate 为真 GMT）、图片策略、第二个源更替（CNBeta→雷锋网）、合并条数、自测钩子
 
 ## 7. 代码约定与红线
