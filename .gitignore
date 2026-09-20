@@ -1,5 +1,8 @@
 # macOS metadata
 .DS_Store
 
+# opencode runtime state
+.omo/
+
 # temp/partial artifacts
 *.part
