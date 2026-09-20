@@ -131,11 +131,50 @@ local function xhtml(title, body)
 </body></html>]]
 end
 
+-- 目录分组：跳过封面（首条），按来源首次出现排序，组内保持原相对顺序；
+-- 非 nil 来源不足两个时返回 nil（单源/合并失败场景保持平铺）
+local function toc_groups(toc)
+    local groups, by_label = {}, {}
+    local sources, distinct = {}, 0
+    for index = 2, #toc do
+        local entry = toc[index]
+        if entry.source ~= nil and not sources[entry.source] then
+            sources[entry.source] = true
+            distinct = distinct + 1
+        end
+        local label = entry.source or "其他"
+        local group = by_label[label]
+        if not group then
+            group = { label = label, entries = {} }
+            by_label[label] = group
+            groups[#groups + 1] = group
+        end
+        group.entries[#group.entries + 1] = entry
+    end
+    if distinct < 2 then return nil end
+    return groups
+end
+
 local function build_nav(toc)
     local items = { "<ol>" }
-    for _, entry in ipairs(toc) do
-        items[#items + 1] = '<li><a href="text/' .. entry.href .. '">'
-            .. escape(entry.title) .. "</a></li>"
+    local groups = toc_groups(toc)
+    if groups then
+        -- 封面保持在顶层首位，其后每个来源一个 <li><span>标签</span><ol>…</ol></li>
+        items[#items + 1] = '<li><a href="text/' .. toc[1].href .. '">'
+            .. escape(toc[1].title) .. "</a></li>"
+        for _, group in ipairs(groups) do
+            items[#items + 1] = "<li><span>" .. escape(group.label) .. "</span><ol>"
+            for _, entry in ipairs(group.entries) do
+                items[#items + 1] = '<li><a href="text/' .. entry.href .. '">'
+                    .. escape(entry.title) .. "</a></li>"
+            end
+            items[#items + 1] = "</ol></li>"
+        end
+    else
+        for _, entry in ipairs(toc) do
+            items[#items + 1] = '<li><a href="text/' .. entry.href .. '">'
+                .. escape(entry.title) .. "</a></li>"
+        end
     end
     items[#items + 1] = "</ol>"
     return [[<?xml version="1.0" encoding="utf-8"?>
@@ -146,14 +185,36 @@ end
 
 local function build_ncx(toc, identifier, title)
     local points = {}
-    for index, entry in ipairs(toc) do
-        points[#points + 1] = string.format('<navPoint id="nav-%d" playOrder="%d">', index, index)
-            .. "<navLabel><text>" .. escape(entry.title) .. "</text></navLabel>"
-            .. '<content src="text/' .. entry.href .. '"/></navPoint>'
+    local sequence = 0
+    -- 生成 navPoint 头（id/playOrder 按文档顺序递增），尾部由调用方补齐
+    local function point_head(entry_title, entry_href)
+        sequence = sequence + 1
+        return string.format('<navPoint id="nav-%d" playOrder="%d">', sequence, sequence)
+            .. "<navLabel><text>" .. escape(entry_title) .. "</text></navLabel>"
+            .. '<content src="text/' .. entry_href .. '"/>'
+    end
+    local groups = toc_groups(toc)
+    local depth = 1
+    if groups then
+        depth = 2
+        points[#points + 1] = point_head(toc[1].title, toc[1].href) .. "</navPoint>"
+        for _, group in ipairs(groups) do
+            -- NCX 的 content 必填：父节点指向组内首条
+            local parent = point_head(group.label, group.entries[1].href)
+            local children = {}
+            for _, entry in ipairs(group.entries) do
+                children[#children + 1] = point_head(entry.title, entry.href) .. "</navPoint>"
+            end
+            points[#points + 1] = parent .. "\n" .. table.concat(children, "\n") .. "\n</navPoint>"
+        end
+    else
+        for _, entry in ipairs(toc) do
+            points[#points + 1] = point_head(entry.title, entry.href) .. "</navPoint>"
+        end
     end
     return [[<?xml version="1.0" encoding="utf-8"?>
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><head>
-<meta name="dtb:uid" content="]] .. escape(identifier) .. [["/><meta name="dtb:depth" content="1"/>
+<meta name="dtb:uid" content="]] .. escape(identifier) .. [["/><meta name="dtb:depth" content="]] .. depth .. [["/>
 </head><docTitle><text>]] .. escape(title) .. "</text></docTitle><navMap>"
         .. table.concat(points, "\n") .. "</navMap></ncx>"
 end
@@ -222,7 +283,7 @@ function Epub.build(data, output_path)
     for index, item in ipairs(items) do
         local href = string.format("article-%03d.xhtml", index)
         local item_title = item.title or "（无标题）"
-        toc[#toc + 1] = { title = item_title, href = href }
+        toc[#toc + 1] = { title = item_title, href = href, source = item.source_name }
         overview[#overview + 1] = '<li>'
             .. (item.source_name and ('<span class="src">【' .. escape(item.source_name) .. '】</span> ') or "")
             .. '<a href="' .. href .. '">' .. escape(item_title) .. "</a></li>"
