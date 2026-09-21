@@ -7,7 +7,7 @@
 
 - 项目：`technews.koplugin`，个人自用的 KOReader 插件。多源 RSS/网页 → 内容块（文字+图片）→ 整期 EPUB → KOReader 原生阅读器
 - 核心链路可用：单源/合并、缓存、图片开关、菜单与手势入口都已就位（当前源：IT之家 + 雷锋网）
-- 仓库仅本地：分支 `main`，**无 remote**；2026-09-20 完成基建与 B 段体验打磨（基线提交 `4c962b0`，后续改动见 git log）
+- 仓库仅本地：分支 `main`，**无 remote**；最新里程碑 tag `v0.1.1`（快照见 `snapshots/`，镜像于 CodexProject）；基线提交 `4c962b0`，后续改动见 git log
 - 模拟器插件副本与源码逐字一致（2026-09-20，`diff -rq` 通过）
 - 测试与 lint 基建已就位：8 个 spec（245 项断言全绿：window/dedupe/imgurl/epub/subscriptions/htmltext/rss/extract）、`scripts/run_specs.sh`、`.luacheckrc`（0 warning），命令见 §5
 - B 段体验打磨 5/5 完成（进度细分、两源去重、图片瘦身、目录层级化）；摘要模式补全经调研取消（IT之家 RSS 描述即全文）
@@ -22,7 +22,8 @@
 ├── .gitignore                                      ← 忽略 .DS_Store、*.part
 ├── .omo/                                           ← opencode 运行态，非源码
 ├── spec/                                           ← Lua 规格测试（8 个 spec），dev-only 不部署
-├── scripts/                                        ← run_specs.sh，dev-only 不部署
+├── scripts/                                        ← run_specs.sh / make_snapshot.sh，dev-only 不部署
+├── snapshots/                                      ← 里程碑快照（ZIP+bundle，gitignore，镜像到 CodexProject）
 └── technews.koplugin/                              ← 运行时插件（逐字镜像到模拟器/真机）
     ├── main.lua                                    ← 入口、全屏首页、抓取编排、设置
     ├── _meta.lua                                   ← 插件元信息
@@ -147,7 +148,7 @@ rsync -a --delete \
 # 3) 重启模拟器实测
 ```
 
-- 模拟器副本：`koreader-dev/plugins/technews.koplugin`（2026-09-20 与源码逐字一致）
+- 模拟器副本：`koreader-dev/plugins/technews.koplugin`（2026-09-21 与源码逐字一致）
 - 在模拟器里临时改代码可以，但**记得回填源码**，仓库才是源头
 - 同步**前**务必先做 `.before-` 备份，否则回滚无据
 
@@ -161,7 +162,7 @@ rsync -a --delete \
 2. 跑检查（见 §5），确认 `luacheck` 无告警
 3. 按 §3 步骤同步到模拟器（先备份，再 `rsync --delete`）
 4. 重启模拟器实测，用 F8 截图留证
-5. 里程碑完成后更新 §6 与 `technews.koplugin/TODO.md`
+5. 里程碑完成后：更新 §6 与 `technews.koplugin/TODO.md`；打快照 `bash scripts/make_snapshot.sh "<描述>"`（可安装 ZIP + 完整历史 bundle + 外部镜像），视情况升 `main.lua` 版本号并 `git tag`
 6. 大操作（推送、删除、真机部署、清缓存）先与用户确认
 
 ## 5. 测试与检查
@@ -182,7 +183,7 @@ luacheck technews.koplugin spec  # 静态检查（应为 0 warning / 0 error）
 1. **构建内存风险**（`technews/epub.lua:44-68`）：整期内容常驻内存；`make_zip` 用 `table.concat` 把所有条目（含图片二进制）拼成一整块 zip 字符串，峰值约为图片字节数的 2 倍。低内存 Kindle 上有隐患。（2026-09-20 图片经 CDN 缩放宽 800 后单张显著变小，但每条已放开为全量图片，峰值仍随图片张数增长；流式构建未做。）
 2. **CRC32 纯 Lua 逐字节循环**（`technews/epub.lua:11-32`）：对整期图片载荷逐字节运算（IT之家图片缩放宽 800 后显著变小），真机上可能造成构建卡顿；需要基准测试。
 3. **版本号漂移**（`main.lua:37` 对比 `163`）：`version` 字段是 `"0.1.0"`，「关于」弹窗却写 `v0.1`。
-2026-09-20 已修复并验证（详见 git log）：取消语义统一（取消 = 整期中止 + 中性提示）、合并期图片上限跨源共享（当前 150）、`clear_date`/`clear_all` 同步清理 `.sdr`、删除无调用方的 `paragraphs` 链；CNBeta 因 .tw 域名境外 302→MSN、大陆不翻墙不可达而停用，第二个源改为雷锋网（适配器保留，可再启用）；订阅源选择框架上线（首次多选弹窗、订阅源设置子菜单、菜单与合并按启用源动态化）；阶段二接入 4 个新源并升级三处核心：`rss` 支持 `content:encoded`、抽取器支持 `<figure>`/独立图片、按图床携带 Referer（少数派必需、微信图床禁用）。2026-09-21 修复少数派双模板抽取（`extract` 支持多候选起点 `starts`，派早报不再退化为短摘要）；2026-09-21 交互改版为全屏首页（主菜单单入口，分源列表收进「分源阅读」子菜单，设置集中到主页）；2026-09-21 上线文章收藏（阅读器菜单一键收藏/取消，单篇快照 EPUB + 索引，构建期写入 `.items.lua` sidecar 供定位）。
+2026-09-20 已修复并验证（详见 git log）：取消语义统一（取消 = 整期中止 + 中性提示）、合并期图片上限跨源共享（当前 150）、`clear_date`/`clear_all` 同步清理 `.sdr`、删除无调用方的 `paragraphs` 链；CNBeta 因 .tw 域名境外 302→MSN、大陆不翻墙不可达而停用，第二个源改为雷锋网（适配器保留，可再启用）；订阅源选择框架上线（首次多选弹窗、订阅源设置子菜单、菜单与合并按启用源动态化）；阶段二接入 4 个新源并升级三处核心：`rss` 支持 `content:encoded`、抽取器支持 `<figure>`/独立图片、按图床携带 Referer（少数派必需、微信图床禁用）。2026-09-21 修复少数派双模板抽取（`extract` 支持多候选起点 `starts`，派早报不再退化为短摘要）；2026-09-21 交互改版为全屏首页（主菜单单入口，分源列表收进「分源阅读」子菜单，设置集中到主页）；2026-09-21 上线文章收藏（阅读器菜单一键收藏/取消，单篇快照 EPUB + 索引，构建期写入 `.items.lua` sidecar 供定位）；2026-09-21 发布 `v0.1.1`：版本号单一来源（`main.lua` 的 `version`，关于弹窗动态读取）+ 快照体系（`scripts/make_snapshot.sh` → 可安装 ZIP/bundle/外部镜像）。
 
 ### TODO.md 状态摘要
 
@@ -190,7 +191,7 @@ luacheck technews.koplugin spec  # 静态检查（应为 0 warning / 0 error）
 
 - **A 先做**（封面、缓存自动清理、图片开关即时生效、错误提示友好化、缓存过期自动更新）：5/5 完成
 - **B 体验打磨**（今日时间窗口、抓取进度细分、两源去重、图片瘦身、目录层级化）：5/5 完成；摘要模式补全经调研取消（IT之家 RSS 描述即全文，见 §6 取舍记录）
-- **C 成品化**（设置集中、真机验证、失败降级策略、版本化打包、i18n）：1/5 完成（设置集中：全屏主页）
+- **C 成品化**（设置集中、真机验证、失败降级策略、版本化打包、i18n）：2/5 完成（设置集中：全屏主页；版本化打包：`make_snapshot.sh` + tag `v0.1.1`）
 - **D 订阅源体系**（2026-09-20 起）：选择框架 + 4 个新源（爱范儿/极客公园/Solidot/少数派，默认停用）均已完成；后续继续加源（研究 → 适配器 → 实测 → 单测）
 - 末尾「已知取舍记录」记有：今日定义、时区（RSS 的 pubDate 为真 GMT）、图片策略、第二个源更替（CNBeta→雷锋网）、合并条数、自测钩子
 
@@ -214,6 +215,7 @@ luacheck technews.koplugin spec  # 静态检查（应为 0 warning / 0 error）
 | 模拟器插件副本 | `.../koreader-dev/plugins/technews.koplugin` |
 | 截图目录 | `.../koreader-dev/koreader-emulator-arm64-apple-darwin24.6.0-debug/koreader/screenshots/` |
 | 启动日志 | `/tmp/koreader-launch.log` |
+| 快照镜像目录 | `/Users/isword/DEV/CodexProject/Kindle工具/TechNews插件功能版本化备份` |
 
 ## 9. 维护本文件
 
