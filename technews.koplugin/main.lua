@@ -596,6 +596,15 @@ function TechNews:buildAndOpen(issue_id, title, date, items, images)
         end)
         return
     end
+    -- 抓取与构建全部完成：弹一条含条数/图片数的完成提示（2 秒自动消失）
+    local image_count = 0
+    for _ in pairs(images or {}) do
+        image_count = image_count + 1
+    end
+    UIManager:show(InfoMessage:new{
+        text = string.format("下载完成 · %d 条资讯 · %d 张图片", #items, image_count),
+        timeout = 2,
+    })
     UIManager:scheduleIn(0.1, function()
         self:openEpub(path)
     end)
@@ -771,10 +780,8 @@ function TechNews:confirmRefetch()
         cancel_text = "取消",
         ok_callback = function()
             storage:clear_date(today_str())
-            UIManager:show(InfoMessage:new{
-                text = "今日缓存已清除，请重新打开资讯",
-                timeout = 1,
-            })
+            -- 清缓存后立即重新抓取合并期（带进度显示），无需用户再手动打开
+            self:openMergedIssue()
         end,
     })
 end
