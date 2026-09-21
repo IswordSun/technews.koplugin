@@ -549,6 +549,7 @@ function TechNews:buildAndOpen(issue_id, title, date, items, images)
     }, path)
     if not ok then
         logger.warn("technews epub build failed:", tostring(err))
+        Trapper:clear()
         UIManager:scheduleIn(0.1, function()
             UIManager:show(InfoMessage:new{
                 text = "生成 EPUB 失败\n" .. tostring(err),
@@ -623,6 +624,7 @@ function TechNews:openIssue(source_id)
     Trapper:wrap(function()
         local bundle, err = self:fetchSource(source)
         if not bundle then
+            Trapper:clear()
             if err == "已取消" then
                 self:showCancelled()
                 return
@@ -632,6 +634,8 @@ function TechNews:openIssue(source_id)
         end
         local title = string.format("%s · %s", source.name, date)
         self:buildAndOpen(source.id, title, date, bundle.items, bundle.images)
+        -- 结束立即收起进度消息（Trapper 不会自动关闭，需显式 clear；KOReader 惯例）
+        Trapper:clear()
     end)
 end
 
@@ -642,6 +646,7 @@ function TechNews:openMergedIssue()
         UIManager:scheduleIn(0.1, function()
             UIManager:show(InfoMessage:new{
                 text = "请先在「订阅源设置」中选择至少一个新闻源",
+                timeout = 4,
             })
         end)
         return
@@ -675,6 +680,7 @@ function TechNews:openMergedIssue()
             else
                 if err == "已取消" then
                     -- 取消是整期语义：立刻中止，不当作单源失败继续凑刊
+                    Trapper:clear()
                     self:showCancelled()
                     return
                 end
@@ -684,6 +690,7 @@ function TechNews:openMergedIssue()
             end
         end
         if #all == 0 then
+            Trapper:clear()
             self:showFetchError(
                 table.concat(failed, "、") .. " 均不可用",
                 function() self:openMergedIssue() end)
@@ -713,6 +720,7 @@ function TechNews:openMergedIssue()
         end
         local title = "今日科技资讯 · " .. date
         self:buildAndOpen("merged", title, date, kept, all_images)
+        Trapper:clear()
     end)
 end
 
