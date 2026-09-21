@@ -4,5 +4,8 @@
 # opencode runtime state
 .omo/
 
+# milestone snapshots (ZIP + bundle, mirrored outside the repo)
+snapshots/
+
 # temp/partial artifacts
 *.part

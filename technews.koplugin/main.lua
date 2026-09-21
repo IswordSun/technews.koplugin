@@ -55,7 +55,7 @@ local MAX_IMAGES_PER_ISSUE = 150
 local TechNews = WidgetContainer:extend{
     name = "technews",
     is_doc_only = false,
-    version = "0.1.0",
+    version = "0.1.1",
 }
 
 -- 自测只执行一次：插件用 dofile 加载，模块级变量会随 UI 重建被重置，
@@ -400,7 +400,8 @@ function TechNews:getHomeItems()
             keep_menu_open = true,
             callback = function()
                 UIManager:show(InfoMessage:new{
-                    text = "科技资讯订阅 v0.1\n\n作者：Isword先生\n数据来源：IT之家 · 雷锋网\n内容仅供个人阅读学习。",
+                    text = "科技资讯订阅 v" .. self.version
+                        .. "\n\n作者：Isword先生\n数据来源：IT之家 等 6 个订阅源\n内容仅供个人阅读学习。",
                 })
             end,
         },
