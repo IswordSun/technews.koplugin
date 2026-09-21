@@ -239,11 +239,6 @@ function TechNews:withImages()
     return G_reader_settings:readSetting("technews_with_images") ~= false
 end
 
---- 缓存超过 6 小时后是否自动重新抓取
-function TechNews:autoRefreshEnabled()
-    return G_reader_settings:readSetting("technews_auto_refresh") == true
-end
-
 --- 订阅源设置（nil = 用户尚未选择，按各源 default_enabled 默认启用）
 function TechNews:sourceSetting()
     return G_reader_settings:readSetting("technews_sources")
@@ -253,14 +248,6 @@ end
 function TechNews:setSourceSetting(set)
     G_reader_settings:saveSetting("technews_sources", set)
     storage:clear_date(today_str())
-end
-
---- 缓存是否已过期（需重抓）
-function TechNews:isCacheStale(source_id, date)
-    if not self:autoRefreshEnabled() then return false end
-    local mtime = storage:epub_mtime(source_id, date)
-    if not mtime then return true end
-    return (os.time() - mtime) > 6 * 3600
 end
 
 function TechNews:addToMainMenu(menu_items)
@@ -376,15 +363,6 @@ function TechNews:getHomeItems()
                 storage:clear_date(today_str())
                 -- 带 check_callback_updates_menu 的条目由 callback 负责刷新勾选
                 if touchmenu_instance then touchmenu_instance:updateItems() end
-            end,
-        },
-        {
-            text = "缓存 6 小时后自动更新",
-            keep_menu_open = true,
-            checked_func = function() return self:autoRefreshEnabled() end,
-            callback = function()
-                G_reader_settings:saveSetting("technews_auto_refresh",
-                    not self:autoRefreshEnabled())
             end,
         },
         {
@@ -864,8 +842,7 @@ function TechNews:openIssue(source_id)
     local source = source_by_id(source_id)
     if not source then return end
     local date = today_str()
-    if storage:epub_exists(source.id, date)
-        and not self:isCacheStale(source.id, date) then
+    if storage:epub_exists(source.id, date) then
         self:openEpub(storage:epub_path(source.id, date))
         return
     end
@@ -900,8 +877,7 @@ function TechNews:openMergedIssue()
         return
     end
     local date = today_str()
-    if storage:epub_exists("merged", date)
-        and not self:isCacheStale("merged", date) then
+    if storage:epub_exists("merged", date) then
         self:openEpub(storage:epub_path("merged", date))
         return
     end

@@ -36,11 +36,6 @@ function storage:epub_exists(source_id, date)
     return lfs.attributes(self:epub_path(source_id, date), "mode") == "file"
 end
 
---- 缓存文件的修改时间（秒），不存在返回 nil
-function storage:epub_mtime(source_id, date)
-    return lfs.attributes(self:epub_path(source_id, date), "modification")
-end
-
 -- 前置声明（定义见文件末尾，clear_date/clear_all 也要用）
 local remove_recursive
 
