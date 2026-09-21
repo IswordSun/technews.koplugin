@@ -722,7 +722,7 @@ function TechNews:openEpub(path)
 end
 
 --- 当前阅读的文章条目及其所在期路径；任一条件不满足返回 nil。
--- 判定链：有文档 → 文档旁有可读 sidecar → 目录当前章节标题与 sidecar 条目精确匹配。
+-- 判定链：有文档 → 文档旁有可读 sidecar → 定位当前章节标题 → 与 sidecar 条目精确匹配。
 function TechNews:currentIssueArticle()
     local ui = self.ui
     local document = ui and ui.document
@@ -730,8 +730,51 @@ function TechNews:currentIssueArticle()
     if not issue_path then return nil end
     local meta = favorites.load_sidecar(issue_path)
     if not meta then return nil end
-    local toc = ui.toc
-    local title = toc and toc.getTocTitleOfCurrentPage and toc:getTocTitleOfCurrentPage()
+
+    -- 当前章节标题用 xpointer 比较定位，而不是 KOReader 的
+    -- getTocTitleOfCurrentPage()。原因（合并期实测）：目录按来源分组，
+    -- NCX 父节点按来源、子节点按组内顺序，与正文 spine 的时间顺序不一致，
+    -- 于是 TOC 顺序 != 文档顺序（非单调）。ReaderToc:getTocIndexByPage 却按
+    -- TOC 顺序线性扫描、遇到首个 page 超界即 early break，非单调目录会提前
+    -- 中断并返回错误条目——实测会返回「IT之家」这类分组标签或别家的章节。
+    -- 而 xpointer 比较与 TOC 排列无关：在所有条目中取「不晚于当前位置」的
+    -- 最大 xpointer；相同 xpointer（分组父节点 content 指向组内首条）时取
+    -- TOC 中靠后者，让子条目胜过父标签。
+    local toc_reader = ui and ui.toc
+    if toc_reader and not toc_reader.toc and toc_reader.fillToc then
+        pcall(toc_reader.fillToc, toc_reader)
+    end
+    local entries = toc_reader and toc_reader.toc
+    local title
+    local cur_xp = document.getXPointer and document:getXPointer()
+    -- cur_xp 为空串说明当前没有有效书签位置（crengine getBookmark 为空）：
+    -- 此时 createXPointer 全部为 null、比较恒返回 0，扫描会退化成「取最后一条」，
+    -- 必须改走兜底而不参与比较
+    if entries and cur_xp and cur_xp ~= "" and document.compareXPointers then
+        local best
+        for _, entry in ipairs(entries) do
+            if entry.xpointer and entry.title then
+                local cmp = document:compareXPointers(entry.xpointer, cur_xp)
+                if cmp == 0 or cmp == 1 then -- 条目位置不晚于当前页
+                    if not best then
+                        best = entry
+                    else
+                        -- rel == -1：entry 比 best 更靠后（xpointer 更大）→ 取 entry
+                        -- rel == 0：同一位置 → 取 TOC 中靠后者（子条目胜过组标签）
+                        local rel = document:compareXPointers(entry.xpointer, best.xpointer)
+                        if rel == -1 or rel == 0 then best = entry end
+                    end
+                end
+            end
+        end
+        if best then title = best.title end
+    end
+    -- 兜底：没有 xpointer 信息（引擎不支持/无目录）时退回 KOReader 原生查找，
+    -- 保证单源、平铺目录等旧场景行为不变
+    if not title or title == "" then
+        title = toc_reader and toc_reader.getTocTitleOfCurrentPage
+            and toc_reader:getTocTitleOfCurrentPage()
+    end
     if not title or title == "" then return nil end
     for _, item in ipairs(meta.items) do
         if item.title == title then
@@ -755,7 +798,7 @@ function TechNews:toggleFavorite(article, issue_path)
     logger.info("technews favorite:", article.title, issue_path)
     Trapper:wrap(function()
         Trapper:info("收藏中…（点击可取消）")
-        local added, err = favorites.add(article, function(text)
+        local added, err = favorites.add(article, issue_path, function(text)
             return Trapper:info(text)
         end)
         Trapper:clear()

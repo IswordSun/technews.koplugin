@@ -17,6 +17,7 @@ local epub = require("technews.epub")
 local http = require("technews.http")
 local imgurl = require("technews.imgurl")
 local storage = require("technews.storage")
+local zipread = require("technews.zipread")
 
 local favorites = {}
 
@@ -171,9 +172,74 @@ function favorites.load_sidecar(epub_path)
     return data
 end
 
---- 收藏一篇文章：下载图片 → 生成自包含单篇快照 EPUB → 追加索引。
--- progress_cb(text) 每张图片调用一次，返回 false 可中止；中止/失败返回 nil, 原因。
-function favorites.add(article, progress_cb)
+--- 尝试从本期 EPUB 就地提取文章图片（零网络请求）。
+-- 定位链：sidecar 条目序号 N → OEBPS/text/article-NNN.xhtml → 章节内 <img> 出现顺序
+-- 即内容块图片入册顺序。返回以内容块 URL 为键的 images 表；任何环节不成立
+-- （无 sidecar / 条目定位失败 / ZIP 不可解析 / 章节图数与内容块图数不符 / 某张提取失败）
+-- 都返回 nil，由调用方回退到网络下载。
+local function extract_images_from_issue(article, issue_path)
+    local meta = favorites.load_sidecar(issue_path)
+    if not meta then return nil end
+    -- 优先按原文链接定位（标题理论上唯一，但链接更稳），退化到精确标题
+    local index
+    for i, item in ipairs(meta.items) do
+        if article.link and item.link == article.link then
+            index = i
+            break
+        end
+    end
+    if not index then
+        for i, item in ipairs(meta.items) do
+            if item.title == article.title then
+                index = i
+                break
+            end
+        end
+    end
+    if not index then return nil end
+
+    local reader = zipread.open(issue_path)
+    if not reader then return nil end
+    local ok, images = pcall(function()
+        -- 章节文件名与 sidecar 序号一一对应（epub.lua 用 article-%03d.xhtml）
+        local chapter = reader:extract(
+            string.format("OEBPS/text/article-%03d.xhtml", index))
+        if not chapter then return nil end
+        -- epub.lua 渲染图片块时按块顺序写出 <div class="img"><img src="../images/…">
+        local names = {}
+        for name in chapter:gmatch('<img src="%.%./images/([^"]+)"') do
+            names[#names + 1] = name
+        end
+        local urls = {}
+        for _, block in ipairs(article.blocks or {}) do
+            if block.img then urls[#urls + 1] = block.img end
+        end
+        -- 构建期会跳过没有数据的图片块（当次未下载/超出上限），数量不符说明
+        -- 本章图片不完整，必须回退下载补齐（正文与其余图片最终仍齐全）
+        if #names ~= #urls then return nil end
+        local images = {}
+        for i, url in ipairs(urls) do
+            local data = reader:extract("OEBPS/images/" .. names[i])
+            if not data then return nil end
+            local ext = names[i]:match("%.([%a%d]+)$") or "jpg"
+            images[url] = { data = data, ext = ext:lower() }
+        end
+        return images
+    end)
+    reader:close()
+    if not ok or not images then
+        if not ok then
+            logger.warn("technews favorite local extract failed:", tostring(images))
+        end
+        return nil
+    end
+    return images
+end
+
+--- 收藏一篇文章：提取图片 → 生成自包含单篇快照 EPUB → 追加索引。
+-- issue_path 为本期 EPUB 路径：给出时优先就地提取图片（零网络），不可行再回退下载。
+-- progress_cb(text) 返回 false 可中止；中止/失败返回 nil, 原因。
+function favorites.add(article, issue_path, progress_cb)
     if not article or not article.title then
         return nil, "缺少文章信息"
     end
@@ -181,33 +247,44 @@ function favorites.add(article, progress_cb)
         return nil, "无法创建收藏目录"
     end
 
-    -- 1) 下载图片（按 URL 去重、上限 MAX_IMAGES；单张失败静默跳过，正文照常收藏）
-    local pending, seen = {}, {}
-    for _, block in ipairs(article.blocks or {}) do
-        if block.img and not seen[block.img] and #pending < MAX_IMAGES then
-            seen[block.img] = true
-            pending[#pending + 1] = block.img
+    -- 1) 图片：首选从本期 EPUB 就地提取（构建期已下载过的原图，零网络）；
+    --    本地不可行时回退逐张下载
+    local images
+    if issue_path then
+        if progress_cb and progress_cb("正在从本期提取图片…（点击可取消）") == false then
+            return nil, "已取消"
         end
+        images = extract_images_from_issue(article, issue_path)
     end
-    local images = {}
-    for i, url in ipairs(pending) do
-        if progress_cb then
-            local go_on = progress_cb(string.format("下载图片 %d/%d…（点击可取消）", i, #pending))
-            if go_on == false then
-                return nil, "已取消"
+    if not images then
+        -- 回退：按 URL 去重、上限 MAX_IMAGES；单张失败静默跳过，正文照常收藏
+        local pending, seen = {}, {}
+        for _, block in ipairs(article.blocks or {}) do
+            if block.img and not seen[block.img] and #pending < MAX_IMAGES then
+                seen[block.img] = true
+                pending[#pending + 1] = block.img
             end
         end
-        -- 与每日抓取同规则：CDN 缩放 800；HTTP 400（超高图）降级 480 重试
-        local target = imgurl.rewrite(url, 800) or url
-        local data, err = http.get(target, nil, nil, nil, { referer = imgurl.referer(target) })
-        if not data and err and err:find("HTTP 400", 1, true) then
-            local fallback = imgurl.rewrite(url, 480)
-            if fallback then
-                data = http.get(fallback, nil, nil, nil, { referer = imgurl.referer(fallback) })
+        images = {}
+        for i, url in ipairs(pending) do
+            if progress_cb then
+                local go_on = progress_cb(string.format("下载图片 %d/%d…（点击可取消）", i, #pending))
+                if go_on == false then
+                    return nil, "已取消"
+                end
             end
-        end
-        if data and #data > 0 then
-            images[url] = { data = data, ext = image_ext(url) }
+            -- 与每日抓取同规则：CDN 缩放 800；HTTP 400（超高图）降级 480 重试
+            local target = imgurl.rewrite(url, 800) or url
+            local data, err = http.get(target, nil, nil, nil, { referer = imgurl.referer(target) })
+            if not data and err and err:find("HTTP 400", 1, true) then
+                local fallback = imgurl.rewrite(url, 480)
+                if fallback then
+                    data = http.get(fallback, nil, nil, nil, { referer = imgurl.referer(fallback) })
+                end
+            end
+            if data and #data > 0 then
+                images[url] = { data = data, ext = image_ext(url) }
+            end
         end
     end
 
