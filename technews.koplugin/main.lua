@@ -37,6 +37,7 @@ local logger = require("logger")
 local dedupe = require("technews.dedupe")
 local extract = require("technews.extract")
 local epub = require("technews.epub")
+local favorites = require("technews.favorites")
 local htmltext = require("technews.htmltext")
 local http = require("technews.http")
 local imgurl = require("technews.imgurl")
@@ -271,6 +272,32 @@ function TechNews:addToMainMenu(menu_items)
             self:openHome()
         end,
     }
+    -- 阅读器菜单条目只在阅读文档时注册（文件管理器无 self.ui.document）。
+    -- 已核实：ReaderMenu 的 tab_item_table 一旦构建即缓存，addToMainMenu 每次阅读会话
+    -- 只被调用一次，故文案不能按注册时状态固定，需用 text_func 在每次菜单展开时求值。
+    if self.ui.document then
+        menu_items.technews_favorite = {
+            text_func = function()
+                local article = self:currentIssueArticle()
+                if article and favorites.is_favorited(article.title) then
+                    return "取消收藏当前文章"
+                end
+                return "收藏当前文章"
+            end,
+            sorting_hint = "tools",
+            callback = function()
+                local article, issue_path = self:currentIssueArticle()
+                if not article then
+                    UIManager:show(InfoMessage:new{
+                        text = "当前文章不支持收藏\n（未找到该期资讯的元数据）",
+                        timeout = 3,
+                    })
+                    return
+                end
+                self:toggleFavorite(article, issue_path)
+            end,
+        }
+    end
 end
 
 --- 打开「科技资讯」全屏首页（TouchMenu 单 tab；条目见 getHomeItems）
@@ -378,6 +405,22 @@ function TechNews:getHomeItems()
             end,
         },
     }
+    -- 「我的收藏」紧跟「打开今日资讯」；「管理收藏」仅在确有收藏时出现
+    table.insert(items, 2, {
+        text = "我的收藏",
+        sub_item_table_func = function()
+            return self:getFavoriteItems()
+        end,
+    })
+    if #favorites.load() > 0 then
+        table.insert(items, 3, {
+            text = "管理收藏",
+            keep_menu_open = true,
+            sub_item_table_func = function()
+                return self:getFavoriteManageItems()
+            end,
+        })
+    end
     -- 单 tab 元信息：icon 为左上角 tab 按钮；text 供菜单搜索展示
     items.icon = "home"
     items.text = "科技资讯订阅"
@@ -418,6 +461,63 @@ function TechNews:getSourceSettingItems()
         text = "勾选即生效；改动会清除今日缓存",
         enabled = false,
     }
+    return items
+end
+
+--- 「我的收藏」子菜单：每条收藏一个单篇快照 EPUB 打开入口
+function TechNews:getFavoriteItems()
+    local list = favorites.load()
+    local items = {}
+    for _, entry in ipairs(list) do
+        if entry.file then
+            items[#items + 1] = {
+                text = string.format("%s · %s", entry.title,
+                    os.date("%m-%d", entry.favorited_at or 0)),
+                callback = function()
+                    self:openEpub(entry.file)
+                end,
+            }
+        end
+    end
+    if #items == 0 then
+        items[1] = { text = "暂无收藏", enabled = false }
+    end
+    return items
+end
+
+--- 「管理收藏」子菜单：逐条确认删除；删除后重建条目表以反映成员变化
+function TechNews:getFavoriteManageItems()
+    local ConfirmBox = require("ui/widget/confirmbox")
+    local items = {}
+    for _, entry in ipairs(favorites.load()) do
+        items[#items + 1] = {
+            text = string.format("%s · %s", entry.title,
+                os.date("%m-%d", entry.favorited_at or 0)),
+            keep_menu_open = true,
+            callback = function(touchmenu_instance)
+                UIManager:show(ConfirmBox:new{
+                    text = "删除这条收藏？\n" .. entry.title,
+                    ok_text = "删除",
+                    cancel_text = "取消",
+                    ok_callback = function()
+                        favorites.remove(entry)
+                        UIManager:show(InfoMessage:new{
+                            text = "已删除收藏",
+                            timeout = 2,
+                        })
+                        -- updateItems 只重绘旧条目表：成员已变化，须整体替换后再刷新
+                        if touchmenu_instance then
+                            touchmenu_instance.item_table = self:getFavoriteManageItems()
+                            touchmenu_instance:updateItems(1)
+                        end
+                    end,
+                })
+            end,
+        }
+    end
+    if #items == 0 then
+        items[1] = { text = "暂无收藏", enabled = false }
+    end
     return items
 end
 
@@ -596,6 +696,8 @@ function TechNews:buildAndOpen(issue_id, title, date, items, images)
         end)
         return
     end
+    -- 成功出刊后写入条目 sidecar（阅读器内「收藏当前文章」据此定位当前条目）
+    favorites.write_sidecar(path, title, date, items)
     -- 抓取与构建全部完成：弹一条含条数/图片数的完成提示（2 秒自动消失）
     local image_count = 0
     for _ in pairs(images or {}) do
@@ -616,6 +718,60 @@ function TechNews:openEpub(path)
     else
         self.ui:openFile(path)
     end
+end
+
+--- 当前阅读的文章条目及其所在期路径；任一条件不满足返回 nil。
+-- 判定链：有文档 → 文档旁有可读 sidecar → 目录当前章节标题与 sidecar 条目精确匹配。
+function TechNews:currentIssueArticle()
+    local ui = self.ui
+    local document = ui and ui.document
+    local issue_path = document and document.file
+    if not issue_path then return nil end
+    local meta = favorites.load_sidecar(issue_path)
+    if not meta then return nil end
+    local toc = ui.toc
+    local title = toc and toc.getTocTitleOfCurrentPage and toc:getTocTitleOfCurrentPage()
+    if not title or title == "" then return nil end
+    for _, item in ipairs(meta.items) do
+        if item.title == title then
+            return item, issue_path
+        end
+    end
+    return nil
+end
+
+--- 收藏/取消收藏当前文章（阅读器菜单入口）；收藏过程在 Trapper 协程内进行。
+function TechNews:toggleFavorite(article, issue_path)
+    local entry = favorites.find(article.title)
+    if entry then
+        favorites.remove(entry)
+        UIManager:show(InfoMessage:new{
+            text = "已取消收藏",
+            timeout = 2,
+        })
+        return
+    end
+    logger.info("technews favorite:", article.title, issue_path)
+    Trapper:wrap(function()
+        Trapper:info("收藏中…（点击可取消）")
+        local added, err = favorites.add(article, function(text)
+            return Trapper:info(text)
+        end)
+        Trapper:clear()
+        if added then
+            UIManager:show(InfoMessage:new{
+                text = "已收藏：" .. article.title,
+                timeout = 2,
+            })
+        else
+            local msg = err == "已取消" and "已取消收藏"
+                or ("收藏失败：" .. tostring(err or "未知错误"))
+            UIManager:show(InfoMessage:new{
+                text = msg,
+                timeout = 3,
+            })
+        end
+    end)
 end
 
 --- 统一的抓取失败提示（区分网络问题，并附带重试）

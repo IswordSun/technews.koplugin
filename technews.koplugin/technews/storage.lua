@@ -56,6 +56,7 @@ function storage:clear_date(date)
     for _, name in ipairs(names) do
         os.remove(self.dir .. name)
         remove_recursive(self.dir .. name .. ".sdr")
+        os.remove(self.dir .. name .. ".items.lua") -- 条目 sidecar（收藏定位用）
     end
 end
 
@@ -70,6 +71,7 @@ function storage:clear_all()
     for _, name in ipairs(names) do
         os.remove(self.dir .. name)
         remove_recursive(self.dir .. name .. ".sdr")
+        os.remove(self.dir .. name .. ".items.lua") -- 条目 sidecar（收藏定位用）
     end
 end
 
@@ -118,6 +120,7 @@ function storage:cleanup(retain_days)
     for _, name in ipairs(names) do
         os.remove(self.dir .. name)
         remove_recursive(self.dir .. name .. ".sdr")
+        os.remove(self.dir .. name .. ".items.lua") -- 条目 sidecar（收藏定位用）
         logger.info("technews cleanup removed:", name)
     end
     return #names

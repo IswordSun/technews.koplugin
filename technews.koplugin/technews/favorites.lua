@@ -1,0 +1,265 @@
+-- technews/favorites.lua — 收藏（单篇快照 EPUB）
+--
+-- 目录布局：
+--   <koreader 数据目录>/technews/favorites.lua      索引（Lua 数组，按收藏时间倒序）
+--   <koreader 数据目录>/technews/favorites/*.epub   单篇快照（自包含标题/正文/图片）
+--
+-- 快照独立于每日缓存：storage 的 cleanup/clear_date/clear_all 只清理
+-- <source_id>-<date>.epub 及其 .sdr/.items.lua，不触碰 favorites/ 与索引，
+-- 因此缓存过期或「清理全部缓存」后收藏仍可打开。
+--
+-- 索引条目：{ title, link, source_name, favorited_at = os.time(), file = 快照绝对路径 }
+
+local dump = require("dump")
+local lfs = require("libs/libkoreader-lfs")
+local logger = require("logger")
+local epub = require("technews.epub")
+local http = require("technews.http")
+local imgurl = require("technews.imgurl")
+local storage = require("technews.storage")
+
+local favorites = {}
+
+-- 快照目录与索引位置（索引放在上级目录，避免与快照文件混放）
+favorites.dir = storage.dir .. "favorites/"
+favorites.index_path = storage.dir .. "favorites.lua"
+
+-- 单篇收藏的图片上限（防超长图文拖慢下载与构建）
+local MAX_IMAGES = 40
+
+-- 逐级创建目录（与 storage:init 同思路，兼容父目录不存在）
+local function ensure_dir(path)
+    if lfs.attributes(path, "mode") == "directory" then return true end
+    local cur = path:sub(1, 1) == "/" and "/" or ""
+    for part in path:gmatch("[^/]+") do
+        cur = cur .. part .. "/"
+        if lfs.attributes(cur, "mode") ~= "directory" then
+            local ok, err = lfs.mkdir(cur)
+            if not ok then
+                logger.warn("technews favorites cannot create dir:", cur, tostring(err))
+                return false
+            end
+        end
+    end
+    return true
+end
+
+local function ensure_dirs()
+    return ensure_dir(storage.dir) and ensure_dir(favorites.dir)
+end
+
+-- 按 UTF-8 字符截断（按字节截断会切断多字节字符，产生非法文件名）
+local function truncate_utf8(text, max_chars)
+    local count, pos = 0, 1
+    while pos <= #text and count < max_chars do
+        local byte = text:byte(pos)
+        local size = byte < 0x80 and 1 or byte < 0xE0 and 2 or byte < 0xF0 and 3 or 4
+        if pos + size - 1 > #text then break end -- 尾字符不完整则不收
+        pos = pos + size
+        count = count + 1
+    end
+    return text:sub(1, pos - 1)
+end
+
+-- 文件名净化：路径不安全字符替换为 "_"，保留中文，最长 60 字符
+local function sanitize_title(title)
+    local safe = tostring(title or ""):gsub('[/\\:*?"<>|]', "_")
+    safe = truncate_utf8(safe, 60)
+    if safe == "" then safe = "article" end
+    return safe
+end
+
+-- 同秒同名防撞：已存在时加 -2/-3… 后缀
+local function unique_path(path)
+    if lfs.attributes(path, "mode") ~= "file" then return path end
+    local base, ext = path:match("^(.*)(%.epub)$")
+    for i = 2, 99 do
+        local candidate = base .. "-" .. i .. ext
+        if lfs.attributes(candidate, "mode") ~= "file" then return candidate end
+    end
+    return path
+end
+
+-- 从 URL 推断图片扩展名（与 main.lua 的 image_ext 同规则）
+local function image_ext(url)
+    local path = url:match("^[^?]+") or url
+    local ext = path:match("%.([%a%d]+)$")
+    if ext then
+        ext = ext:lower()
+        if ext == "jpeg" then ext = "jpg" end
+        if ext == "jpg" or ext == "png" or ext == "gif" or ext == "webp" then
+            return ext
+        end
+    end
+    return "jpg"
+end
+
+--- 读取索引，按收藏时间倒序；文件缺失/损坏时返回空数组
+function favorites.load()
+    local list = {}
+    local chunk = loadfile(favorites.index_path)
+    if chunk then
+        local ok, data = pcall(chunk)
+        if ok and type(data) == "table" then
+            for _, entry in ipairs(data) do
+                if type(entry) == "table" and entry.title then
+                    list[#list + 1] = entry
+                end
+            end
+        else
+            logger.warn("technews favorites index unreadable:", tostring(data))
+        end
+    end
+    table.sort(list, function(a, b)
+        return (a.favorited_at or 0) > (b.favorited_at or 0)
+    end)
+    return list
+end
+
+--- 精确标题匹配（收藏定位与判重的唯一依据）；未命中返回 nil
+function favorites.find(title)
+    if not title or title == "" then return nil end
+    for _, entry in ipairs(favorites.load()) do
+        if entry.title == title then return entry end
+    end
+    return nil
+end
+
+function favorites.is_favorited(title)
+    return favorites.find(title) ~= nil
+end
+
+--- 覆盖写入索引（dump 序列化的 Lua 表，可直接 loadfile 读回）
+function favorites.save(list)
+    if not ensure_dirs() then return nil, "无法创建收藏目录" end
+    local file, err = io.open(favorites.index_path, "wb")
+    if not file then return nil, err end
+    -- dump 产物是表达式，须前置 return 才是合法 Lua chunk（loadfile 要求语句）
+    local ok, write_err = file:write("return ", dump(list))
+    file:close()
+    if not ok then return nil, write_err end
+    return true
+end
+
+--- 写入某期 EPUB 的条目 sidecar（<epub_path>.items.lua）。
+-- 只含元数据与内容块（图片二进制不在其中），供阅读器内「收藏当前文章」定位当前条目。
+function favorites.write_sidecar(epub_path, title, date, items)
+    local ok, err = pcall(function()
+        local file, open_err = io.open(epub_path .. ".items.lua", "wb")
+        if not file then error(open_err) end
+        -- 同索引：dump 是表达式，前置 return 后 loadfile 才能执行
+        file:write("return ", dump({ title = title, date = date, items = items }))
+        file:close()
+    end)
+    if not ok then
+        logger.warn("technews sidecar write failed:", tostring(err))
+        return nil, tostring(err)
+    end
+    return true
+end
+
+--- 读取 sidecar；不存在/损坏返回 nil
+function favorites.load_sidecar(epub_path)
+    if not epub_path or epub_path == "" then return nil end
+    local chunk = loadfile(epub_path .. ".items.lua")
+    if not chunk then return nil end
+    local ok, data = pcall(chunk)
+    if not ok or type(data) ~= "table" or type(data.items) ~= "table" then
+        logger.warn("technews sidecar unreadable:", epub_path, tostring(data))
+        return nil
+    end
+    return data
+end
+
+--- 收藏一篇文章：下载图片 → 生成自包含单篇快照 EPUB → 追加索引。
+-- progress_cb(text) 每张图片调用一次，返回 false 可中止；中止/失败返回 nil, 原因。
+function favorites.add(article, progress_cb)
+    if not article or not article.title then
+        return nil, "缺少文章信息"
+    end
+    if not ensure_dirs() then
+        return nil, "无法创建收藏目录"
+    end
+
+    -- 1) 下载图片（按 URL 去重、上限 MAX_IMAGES；单张失败静默跳过，正文照常收藏）
+    local pending, seen = {}, {}
+    for _, block in ipairs(article.blocks or {}) do
+        if block.img and not seen[block.img] and #pending < MAX_IMAGES then
+            seen[block.img] = true
+            pending[#pending + 1] = block.img
+        end
+    end
+    local images = {}
+    for i, url in ipairs(pending) do
+        if progress_cb then
+            local go_on = progress_cb(string.format("下载图片 %d/%d…（点击可取消）", i, #pending))
+            if go_on == false then
+                return nil, "已取消"
+            end
+        end
+        -- 与每日抓取同规则：CDN 缩放 800；HTTP 400（超高图）降级 480 重试
+        local target = imgurl.rewrite(url, 800) or url
+        local data, err = http.get(target, nil, nil, nil, { referer = imgurl.referer(target) })
+        if not data and err and err:find("HTTP 400", 1, true) then
+            local fallback = imgurl.rewrite(url, 480)
+            if fallback then
+                data = http.get(fallback, nil, nil, nil, { referer = imgurl.referer(fallback) })
+            end
+        end
+        if data and #data > 0 then
+            images[url] = { data = data, ext = image_ext(url) }
+        end
+    end
+
+    -- 2) 生成快照 EPUB（文件名：时间戳-净化标题）
+    local now = os.time()
+    local filename = os.date("%Y%m%d-%H%M%S", now) .. "-"
+        .. sanitize_title(article.title) .. ".epub"
+    local path = unique_path(favorites.dir .. filename)
+    local ok, build_err = pcall(epub.build, {
+        title = article.title,
+        date = os.date("%Y-%m-%d", now),
+        items = { article },
+        images = images,
+    }, path)
+    if not ok then
+        os.remove(path .. ".part")
+        return nil, tostring(build_err)
+    end
+
+    -- 3) 追加索引；索引写失败则回滚快照，避免留下孤儿文件
+    local entry = {
+        title = article.title,
+        link = article.link,
+        source_name = article.source_name,
+        favorited_at = now,
+        file = path,
+    }
+    local list = favorites.load()
+    list[#list + 1] = entry
+    local saved, save_err = favorites.save(list)
+    if not saved then
+        os.remove(path)
+        return nil, save_err or "索引写入失败"
+    end
+    return entry
+end
+
+-- 两条索引是否指同一条收藏：优先按快照文件路径，退化到标题+时间
+local function same_entry(a, b)
+    if a.file and b.file then return a.file == b.file end
+    return a.title == b.title and a.favorited_at == b.favorited_at
+end
+
+--- 移除一条收藏：尽力删除快照文件（不存在/删除失败无妨），再从索引剔除并保存
+function favorites.remove(entry)
+    if not entry then return nil, "缺少条目" end
+    if entry.file then os.remove(entry.file) end
+    local kept = {}
+    for _, e in ipairs(favorites.load()) do
+        if not same_entry(e, entry) then kept[#kept + 1] = e end
+    end
+    return favorites.save(kept)
+end
+
+return favorites
