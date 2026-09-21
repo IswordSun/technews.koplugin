@@ -4,7 +4,10 @@
 # opencode runtime state
 .omo/
 
-# milestone snapshots (ZIP + bundle, mirrored outside the repo)
+# workspace field doc (kept on disk for local sessions, not committed)
+AGENTS.md
+
+# milestone snapshots (ZIP + bundle, self-contained)
 snapshots/
 
 # temp/partial artifacts

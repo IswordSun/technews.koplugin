@@ -29,12 +29,10 @@
 ## 开发
 
 ```bash
-bash scripts/run_specs.sh                # Lua 规格测试（8 个 spec，245 项断言）
+bash scripts/run_specs.sh                # Lua 规格测试
 luacheck technews.koplugin spec          # 静态检查
 bash scripts/make_snapshot.sh "<描述>"   # 里程碑快照（可安装 ZIP + 完整 git 历史 bundle）
 ```
-
-目录结构、环境与工作流见 `AGENTS.md`（本仓库现场文档）。
 
 ## 数据来源与声明
 
