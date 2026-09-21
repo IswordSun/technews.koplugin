@@ -176,6 +176,76 @@ do
 end
 
 ----------------------------------------------------------------------
+-- strip：剥离 [from .. 其后最早的 to) 区块；多处命中时重复剥离
+----------------------------------------------------------------------
+do
+    local html = table.concat({
+        '<div class="start-a">',
+        '<p>KEEP_HEAD 剥离点之前的内容保留。</p>',
+        '<div class="comment__list">',
+        '<p>DROP_ONE 第一段评论区内容应被剥离。</p>',
+        '</div>',
+        '<div class="item-next">',
+        '<p>KEEP_MID 首段正文保留。</p>',
+        '<div class="comment__list">',
+        '<p>DROP_TWO 第二段评论区内容也应被剥离。</p>',
+        '</div>',
+        '<div class="item-next">',
+        '<p>KEEP_TAIL 尾部正文保留。</p>',
+        '</div>',
+    })
+    local blocks = extract.blocks(html, {
+        starts = { '<div class="start-a">' },
+        strip = { { from = '<div class="comment__list"', to = { '<div class="item-next">' } } },
+    })
+    eq(n_blocks(blocks), 3, "strip 剥离两处中段：保留 3 个文本块")
+    contains(text_at(blocks, 1), "KEEP_HEAD", "from 之前的内容保留")
+    contains(text_at(blocks, 2), "KEEP_MID", "两处剥离点之间的正文保留")
+    contains(text_at(blocks, 3), "KEEP_TAIL", "末尾正文保留")
+    not_contains(text_at(blocks, 1) .. text_at(blocks, 2) .. text_at(blocks, 3),
+        "DROP_ONE", "第一段评论区内容被剥离")
+    not_contains(text_at(blocks, 1) .. text_at(blocks, 2) .. text_at(blocks, 3),
+        "DROP_TWO", "第二段评论区内容被剥离")
+end
+
+----------------------------------------------------------------------
+-- strip：to 全部未命中时删到区域末尾
+----------------------------------------------------------------------
+do
+    local html = table.concat({
+        '<div class="start-a">',
+        '<p>KEEP_HEAD 剥离点之前的内容保留。</p>',
+        '<div class="comment__list">',
+        '<p>DROP_REST 无 to 命中时应删到区域末尾。</p>',
+    })
+    local blocks = extract.blocks(html, {
+        starts = { '<div class="start-a">' },
+        strip = { { from = '<div class="comment__list"', to = { '<div class="never-matches">' } } },
+    })
+    eq(n_blocks(blocks), 1, "strip 无 to：只保留剥离点之前的 1 个文本块")
+    contains(text_at(blocks, 1), "KEEP_HEAD", "剥离点之前的内容保留")
+    not_contains(text_at(blocks, 1), "DROP_REST", "剥离点之后的内容全被删除")
+end
+
+----------------------------------------------------------------------
+-- strip：规则未命中时内容原样保留
+----------------------------------------------------------------------
+do
+    local html = table.concat({
+        '<div class="start-a">',
+        '<p>KEEP_ONE 规则未命中时内容原样保留。</p>',
+        '<p>KEEP_TWO 第二段同样保留。</p>',
+    })
+    local blocks = extract.blocks(html, {
+        starts = { '<div class="start-a">' },
+        strip = { { from = '<div class="not-present"', to = { '</div>' } } },
+    })
+    eq(n_blocks(blocks), 2, "strip 未命中：2 个文本块原样保留")
+    contains(text_at(blocks, 1), "KEEP_ONE", "首段未被误删")
+    contains(text_at(blocks, 2), "KEEP_TWO", "次段未被误删")
+end
+
+----------------------------------------------------------------------
 -- 区域切出但没有有效内容块时返回 nil
 ----------------------------------------------------------------------
 do

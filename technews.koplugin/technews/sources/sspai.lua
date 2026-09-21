@@ -31,6 +31,10 @@ return {
             '</article>',
         },
         max_len = 60000,
+        -- 派早报在条目之间内嵌评论区，剥离以防评论头像 / 表情图混入正文图片
+        strip = {
+            { from = '<div class="comment__list"', to = { '<div class="post__body__extend__item' } },
+        },
         drop = {
             "少数派为你呈现",
             "少数派 sspai 官方店铺",
