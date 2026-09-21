@@ -1,8 +1,8 @@
 -- 科技资讯订阅 — 多源 RSS 订阅阅读器
 --
 -- 入口：
---   顶部菜单 → 科技资讯订阅
---   手势/快捷菜单：Dispatcher 动作「科技资讯订阅」
+--   顶部菜单 → 科技资讯订阅 → 全屏首页（打开今日 / 分源阅读 / 设置）
+--   手势/快捷菜单：Dispatcher 动作「科技资讯订阅」（直接打开合并今日）
 --
 -- 数据流：RSS/网页 → 内容块（文字+图片）→ 生成整期 EPUB → KOReader 原生阅读器
 --
@@ -266,82 +266,121 @@ function TechNews:addToMainMenu(menu_items)
     menu_items.technews = {
         text = "科技资讯订阅",
         sorting_hint = "tools",
-        sub_item_table_func = function()
-            return self:getMenuItems()
+        -- 主菜单只保留一个入口：直接打开全屏首页（不再展开下拉子菜单）
+        callback = function()
+            self:openHome()
         end,
     }
 end
 
-function TechNews:getMenuItems()
-    local items = {}
-    -- 每个启用源一项（registry 顺序）
-    for _, source in ipairs(subscriptions.enabled(registry, self:sourceSetting())) do
-        items[#items + 1] = {
-            text = source.menu_label or (source.name .. " · 今日资讯"),
-            keep_menu_open = false,
-            callback = function() self:openIssue(source.id) end,
-        }
-    end
-    items[#items + 1] = {
-        text = "合并 · 今日科技资讯",
-        keep_menu_open = false,
-        callback = function() self:openMergedIssue() end,
-    }
-    items[#items + 1] = {
-        text = "订阅源设置",
-        keep_menu_open = true,
-        sub_item_table_func = function()
-            return self:getSourceSettingItems()
-        end,
-    }
-    items[#items + 1] = {
-        text = "包含图片",
-        keep_menu_open = true,
-        check_callback_updates_menu = true,
-        checked_func = function() return self:withImages() end,
-        callback = function()
-            G_reader_settings:saveSetting("technews_with_images",
-                not self:withImages())
-            -- 切换后当天缓存作废，下次打开重新生成
-            storage:clear_date(today_str())
-        end,
-    }
-    items[#items + 1] = {
-        text = "缓存 6 小时后自动更新",
-        keep_menu_open = true,
-        checked_func = function() return self:autoRefreshEnabled() end,
-        callback = function()
-            G_reader_settings:saveSetting("technews_auto_refresh",
-                not self:autoRefreshEnabled())
-        end,
-    }
-    items[#items + 1] = {
-        text = "重新抓取今日",
-        keep_menu_open = false,
-        callback = function() self:confirmRefetch() end,
-    }
-    items[#items + 1] = {
-        text = "清理全部缓存",
-        keep_menu_open = false,
-        callback = function() self:confirmClearCache() end,
-    }
-    items[#items + 1] = {
-        text = "关于",
-        keep_menu_open = true,
-        callback = function()
-            UIManager:show(InfoMessage:new{
-                text = "科技资讯订阅 v0.1\n\n作者：Isword先生\n数据来源：IT之家 · 雷锋网\n内容仅供个人阅读学习。",
-            })
-        end,
-    }
-
-    -- 首次打开菜单：引导选择订阅源（全局标记防 dofile 重载后重复弹出）
+--- 打开「科技资讯」全屏首页（TouchMenu 单 tab；条目见 getHomeItems）
+function TechNews:openHome()
+    -- 首次使用：打开首页即引导选择订阅源（全局标记防 dofile 重载后重复弹出）
     if self:sourceSetting() == nil and not G_technews_sources_prompted then
         G_technews_sources_prompted = true
         UIManager:scheduleIn(0.2, function()
             self:promptSourceSelection()
         end)
     end
+
+    -- 惰性加载：只有首页需要 TouchMenu（与 KOReader readermenu 同构）
+    local TouchMenu = require("ui/widget/touchmenu")
+    -- 全屏承载容器：CenterContainer 包一层，关闭时整层移除（参照 ReaderMenu:onShowMenu）
+    local menu_container = CenterContainer:new{
+        covers_header = true,
+        ignore = "height",
+        dimen = Device.screen:getSize(),
+    }
+    local home_menu = TouchMenu:new{
+        width = Device.screen:getWidth(),
+        -- TouchMenu 没有 title 字段（title 属于 Menu 部件）；tab 元信息（icon 等）
+        -- 与条目同表：唯一 tab 的本体即首页 item_table，icon 是左上角唯一的 tab 按钮
+        tab_item_table = { self:getHomeItems() },
+        show_parent = menu_container,
+    }
+    home_menu.close_callback = function()
+        UIManager:close(menu_container)
+    end
+    menu_container[1] = home_menu
+    UIManager:show(menu_container)
+end
+
+--- 首页条目表（作为 TouchMenu 唯一 tab，同时充当 item_table）
+-- 关闭时机（已核对 touchmenu.lua 的 TouchMenu:onMenuSelect）：普通 callback 条目是
+-- 「先执行 callback、返回后才 closeMenu」（只有 tap_input 才是先关后跑）；抓取经
+-- Trapper:wrap 在首个进度 yield 时立即返回、随即由 TouchMenu 关闭，故无需手动先关菜单，
+-- 进度框与 ConfirmBox 都会显示在随后关闭的首页之上，不受影响。
+function TechNews:getHomeItems()
+    local items = {
+        {
+            text = "打开今日资讯",
+            callback = function() self:openMergedIssue() end,
+        },
+        {
+            text = "分源阅读",
+            sub_item_table_func = function()
+                -- 每次展开按当前启用集合生成（订阅源设置改动后立即生效）
+                local source_items = {}
+                for _, source in ipairs(subscriptions.enabled(registry, self:sourceSetting())) do
+                    source_items[#source_items + 1] = {
+                        text = source.menu_label or (source.name .. " · 今日资讯"),
+                        callback = function() self:openIssue(source.id) end,
+                    }
+                end
+                return source_items
+            end,
+        },
+        {
+            text = "订阅源设置",
+            keep_menu_open = true,
+            sub_item_table_func = function()
+                return self:getSourceSettingItems()
+            end,
+        },
+        {
+            text = "包含图片",
+            keep_menu_open = true,
+            check_callback_updates_menu = true,
+            checked_func = function() return self:withImages() end,
+            callback = function(touchmenu_instance)
+                G_reader_settings:saveSetting("technews_with_images",
+                    not self:withImages())
+                -- 切换后当天缓存作废，下次打开重新生成
+                storage:clear_date(today_str())
+                -- 带 check_callback_updates_menu 的条目由 callback 负责刷新勾选
+                if touchmenu_instance then touchmenu_instance:updateItems() end
+            end,
+        },
+        {
+            text = "缓存 6 小时后自动更新",
+            keep_menu_open = true,
+            checked_func = function() return self:autoRefreshEnabled() end,
+            callback = function()
+                G_reader_settings:saveSetting("technews_auto_refresh",
+                    not self:autoRefreshEnabled())
+            end,
+        },
+        {
+            text = "重新抓取今日",
+            callback = function() self:confirmRefetch() end,
+        },
+        {
+            text = "清理全部缓存",
+            callback = function() self:confirmClearCache() end,
+        },
+        {
+            text = "关于",
+            keep_menu_open = true,
+            callback = function()
+                UIManager:show(InfoMessage:new{
+                    text = "科技资讯订阅 v0.1\n\n作者：Isword先生\n数据来源：IT之家 · 雷锋网\n内容仅供个人阅读学习。",
+                })
+            end,
+        },
+    }
+    -- 单 tab 元信息：icon 为左上角 tab 按钮；text 供菜单搜索展示
+    items.icon = "home"
+    items.text = "科技资讯订阅"
     return items
 end
 
