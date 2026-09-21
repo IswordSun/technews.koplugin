@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# scripts/make_snapshot.sh — 生成里程碑快照（可安装 ZIP + 完整历史 bundle + 外部镜像）
+# scripts/make_snapshot.sh — 生成里程碑快照（可安装 ZIP + 完整历史 bundle）
 #
 # 用法:   bash scripts/make_snapshot.sh "<描述>"
 # 前置:   工作区干净（所有改动已提交）；版本号自动读自 technews.koplugin/main.lua
 # 产物:   snapshots/NN-<描述>-v<版本>-<短SHA>/
 #            ├── technews.koplugin-v<版本>.zip   可安装（根目录=technews.koplugin/，注释内嵌提交 SHA）
 #            └── technews-repo-<短SHA>.bundle    完整 git 历史（含 tags，可 clone 恢复）
-#         并镜像到仓库外目录 + md5 校验
+#         快照自包含于本仓库的 snapshots/ 目录（gitignore），不写任何外部位置
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -65,26 +65,10 @@ if [ ! -f "$README" ]; then
 fi
 printf '| %s | %s | v%s | `%s` |\n' "$DIR_NAME" "$DESC" "$VERSION" "$SHORT_SHA" >> "$README"
 
-# 4) 镜像到仓库外（防目录级丢失）+ md5 校验
-MIRROR="/Users/isword/DEV/CodexProject/Kindle工具/TechNews插件功能版本化备份"
-mkdir -p "$MIRROR"
-cp "$OUT_DIR/$ZIP_NAME" "$OUT_DIR/$BUNDLE_NAME" "$MIRROR/"
-echo "=== md5 校验（快照 vs 镜像）==="
-for f in "$ZIP_NAME" "$BUNDLE_NAME"; do
-    a=$(md5 -q "$OUT_DIR/$f")
-    b=$(md5 -q "$MIRROR/$f")
-    if [ "$a" = "$b" ]; then
-        echo "OK   $f  $a"
-    else
-        echo "FAIL $f" >&2
-        exit 1
-    fi
-done
-
 echo
 echo "快照完成: $OUT_DIR"
 echo "  版本 v$VERSION | 提交 $SHORT_SHA"
-echo "  镜像: $MIRROR"
+echo "  （快照自包含于 snapshots/；如需仓库外备份，请整体备份本仓库目录）"
 if [ -z "$(git tag -l "v$VERSION")" ]; then
     echo "提示: 建议为该里程碑打 tag → git tag -a v$VERSION -m \"$DESC\""
 fi
