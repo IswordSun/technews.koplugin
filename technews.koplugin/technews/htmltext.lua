@@ -44,6 +44,9 @@ local function img_src(tag)
     if url:find("/v2/t.png", 1, true) then return nil end
     -- 跳过 WordPress 表情图片（s.w.org …/images/core/emoji/…，ifanr 内联表情噪音）
     if url:find("/images/core/emoji/", 1, true) then return nil end
+    -- 跳过 sspai 评论头像缩略图（thumbnail/!32x32r 与 /avatar/ 是评论噪音，非正文配图）
+    if url:find("thumbnail/!32x32r", 1, true) then return nil end
+    if url:find("/avatar/", 1, true) then return nil end
     -- 协议相对地址补全
     if url:sub(1, 2) == "//" then
         url = "https:" .. url
@@ -69,12 +72,28 @@ local function contained(span, s, e)
     return s > span.s and e < span.e
 end
 
---- 提取有序内容块：{ text= } 与 { img=url }
+-- 命中任一 drop 关键词即整块丢弃（段落 / 标题 / 列表项 / 图注共用）
+local function dropped(text, drop_keywords)
+    for _, kw in ipairs(drop_keywords or {}) do
+        if text:find(kw, 1, true) then return true end
+    end
+    return false
+end
+
+-- 容器内容 → 纯文本：先剥离 <script>/<style> 噪音，再走公共转换
+local function inner_text(inner)
+    return htmltext.to_text(
+        (inner:gsub("<script[^>]*>.-</script>", ""):gsub("<style[^>]*>.-</style>", "")))
+end
+
+--- 提取有序内容块：{ text= } / { text=, kind= } 与 { img=url }
 -- 用于把正文按“文字-图片”顺序渲染到 EPUB。
+-- 文本块 kind：heading（h2/h3/h4 小标题）、bullet（<li> 列表项）、caption（<figcaption> 图注）；
+-- 普通段落不带 kind（保持 v2 语义）。
 -- 图片来源：<p> 内（原有逻辑）、<figure> 内（少数派风格）、以及不在任何
 -- <p>/<figure> 内的独立 <img>；全部按源码位置排序、同一张图只收录一次。
 -- @param html HTML 片段（可含转义或 CDATA）
--- @param drop_keywords 命中即丢弃的关键词（作用于段落文本，连带丢弃该段内图片）
+-- @param drop_keywords 命中即丢弃的关键词（作用于文本块，段落命中时连带丢弃段内图片）
 -- @return 块数组
 function htmltext.blocks(html, drop_keywords)
     if not html or html == "" then return {} end
@@ -83,6 +102,11 @@ function htmltext.blocks(html, drop_keywords)
 
     local p_spans = find_spans(html, "<p[^>]*>(.-)</p>")
     local f_spans = find_spans(html, "<figure[^>]*>(.-)</figure>")
+    local h2_spans = find_spans(html, "<h2[^>]*>(.-)</h2>")
+    local h3_spans = find_spans(html, "<h3[^>]*>(.-)</h3>")
+    local h4_spans = find_spans(html, "<h4[^>]*>(.-)</h4>")
+    local li_spans = find_spans(html, "<li[^>]*>(.-)</li>")
+    local cap_spans = find_spans(html, "<figcaption[^>]*>(.-)</figcaption>")
     local imgs = find_spans(html, "(<img[^>]*>)")
     for _, img in ipairs(imgs) do img.tag = img.inner end
 
@@ -102,7 +126,7 @@ function htmltext.blocks(html, drop_keywords)
         return blocks
     end
 
-    -- 候选块：文本取 <p> 起点位置，图片取自身位置，最后统一按位置排序即可还原文档顺序
+    -- 候选块：文本取容器标签起点位置，图片取自身位置，最后统一按位置排序即可还原文档顺序
     local items = {}
     local function push(pos, kind, value)
         items[#items + 1] = { pos = pos, kind = kind, value = value }
@@ -111,14 +135,7 @@ function htmltext.blocks(html, drop_keywords)
     for _, span in ipairs(p_spans) do
         local inner = span.inner:gsub("<script[^>]*>.-</script>", "")
         local text = htmltext.to_text(inner)
-        local drop = false
-        for _, kw in ipairs(drop_keywords or {}) do
-            if text:find(kw, 1, true) then
-                drop = true
-                break
-            end
-        end
-        if not drop then
+        if not dropped(text, drop_keywords) then
             if #text >= 10 then
                 push(span.s, "text", text)
             end
@@ -128,6 +145,34 @@ function htmltext.blocks(html, drop_keywords)
                     if url then push(img.s, "img", url) end
                 end
             end
+        end
+    end
+
+    -- 小标题：不适用 <10 字节的段落规则，只要有文本就收录（drop 关键词照常生效）
+    for _, spans in ipairs({ h2_spans, h3_spans, h4_spans }) do
+        for _, span in ipairs(spans) do
+            local text = inner_text(span.inner)
+            if text ~= "" and not dropped(text, drop_keywords) then
+                push(span.s, "heading", text)
+            end
+        end
+    end
+
+    -- 列表项：内含 <p> 的整项跳过（其段落已由 <p> 路径收集，避免正文重复）
+    for _, span in ipairs(li_spans) do
+        if not span.inner:find("<p[%s>]") then
+            local text = inner_text(span.inner)
+            if #text >= 10 and not dropped(text, drop_keywords) then
+                push(span.s, "bullet", text)
+            end
+        end
+    end
+
+    -- 图注：与段落同规则（>=10 字节 + drop 关键词）
+    for _, span in ipairs(cap_spans) do
+        local text = inner_text(span.inner)
+        if #text >= 10 and not dropped(text, drop_keywords) then
+            push(span.s, "caption", text)
         end
     end
 
@@ -167,8 +212,10 @@ function htmltext.blocks(html, drop_keywords)
                 seen_img[it.pos] = true
                 blocks[#blocks + 1] = { img = it.value }
             end
-        else
+        elseif it.kind == "text" then
             blocks[#blocks + 1] = { text = it.value }
+        else
+            blocks[#blocks + 1] = { text = it.value, kind = it.kind }
         end
     end
     return blocks

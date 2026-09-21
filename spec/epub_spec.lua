@@ -245,6 +245,34 @@ do
 end
 
 ----------------------------------------------------------------------
+-- 样本四：文本块 kind 渲染（heading → <h3>，bullet/caption → 带 class 的 <p>）
+----------------------------------------------------------------------
+
+local kinds = {
+    title = "科技资讯 · 2026-09-20",
+    date = "2026-09-20",
+    items = {
+        { title = "排版样本", source_name = "IT之家", blocks = {
+            { text = "普通段落文字。" },
+            { text = "章节小标题", kind = "heading" },
+            { text = "列表项文字", kind = "bullet" },
+            { text = "图注文字", kind = "caption" },
+        } },
+    },
+}
+
+local kinds_epub = build_and_read(kinds)
+
+do
+    contains(kinds_epub, "<h3>章节小标题</h3>", "heading 块渲染为 <h3>")
+    contains(kinds_epub, '<p class="bullet">· 列表项文字</p>',
+        "bullet 块渲染为带「· 」前缀的 p.bullet")
+    contains(kinds_epub, '<p class="caption">图注文字</p>', "caption 块渲染为 p.caption")
+    contains(kinds_epub, "<p>普通段落文字。</p>", "无 kind 文本块仍渲染为普通 <p>")
+    contains(kinds_epub, "h3 { font-size: 1.12em;", "样式表包含 h3 规则")
+end
+
+----------------------------------------------------------------------
 -- 可选：用 unzip -t 校验 ZIP 完整性（环境中无 unzip 时跳过）
 ----------------------------------------------------------------------
 

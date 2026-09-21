@@ -90,10 +90,13 @@ local CSS = [[
 body { margin: 0 5%; line-height: 1.75; }
 h1 { font-size: 1.55em; line-height: 1.35; margin: 0 0 0.45em; }
 h2 { font-size: 1.25em; line-height: 1.4; margin: 0 0 0.65em; padding-bottom: 0.45em; border-bottom: 1px solid #777; }
+h3 { font-size: 1.12em; line-height: 1.4; margin: 1.2em 0 0.5em; }
 p { margin: 0 0 1em; text-indent: 2em; }
 p.meta { color: #666; font-size: 0.82em; text-indent: 0; margin: 0 0 2em; }
 p.kicker { color: #666; font-size: 0.8em; text-indent: 0; margin: 0 0 0.4em; letter-spacing: 0.06em; }
 p.link { color: #666; font-size: 0.8em; text-indent: 0; margin-top: 1.6em; word-break: break-all; }
+p.bullet { text-indent: 0; margin-left: 1.2em; }
+p.caption { color: #666; font-size: 0.85em; text-align: center; text-indent: 0; margin: 0.3em 0 1.2em; }
 ol { margin: 0; padding-left: 1.5em; }
 li { margin: 0 0 0.8em; line-height: 1.45; }
 a { color: #222; text-decoration: none; }
@@ -225,7 +228,8 @@ end
 --   date  = "2026-09-16",
 --   items = { { title=, source_name=, time=, summary=, blocks=, images=, link= }, ... },
 -- }
--- blocks = { { text= } | { img=url }, ... }；images = { [url] = { data=, ext= } }
+-- blocks = { { text= } | { text=, kind="heading"|"bullet"|"caption" } | { img=url }, ... }；
+-- images = { [url] = { data=, ext= } }
 function Epub.build(data, output_path)
     local date = assert(data and data.date, "missing issue date")
     local items = assert(data.items, "missing items")
@@ -251,9 +255,18 @@ function Epub.build(data, output_path)
         if cover then break end
     end
 
-    -- 渲染一个内容块（文字或图片）
+    -- 渲染一个内容块（文字或图片）；文字块按 kind 选择标签：
+    -- heading → <h3>（文章标题已是 h2，章节内小标题降一级）、bullet → p.bullet、
+    -- caption → p.caption，无 kind（普通段落）保持原有 <p>。
     local function render_block(item, block)
         if block.text then
+            if block.kind == "heading" then
+                return "<h3>" .. escape(block.text) .. "</h3>"
+            elseif block.kind == "bullet" then
+                return '<p class="bullet">· ' .. escape(block.text) .. "</p>"
+            elseif block.kind == "caption" then
+                return '<p class="caption">' .. escape(block.text) .. "</p>"
+            end
             return "<p>" .. escape(block.text) .. "</p>"
         elseif block.img then
             -- 图片优先从整期图片表取（跨条目去重），兼容条目内存储

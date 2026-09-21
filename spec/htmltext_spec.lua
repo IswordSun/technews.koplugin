@@ -5,8 +5,9 @@
 --   2) <figure> 内图片收集（少数派风格）
 --   3) 不在任何 <p>/<figure> 内的独立 <img> 收集
 --   4) 全部块按源码文档顺序排列，且同一张图不重复收集
---   5) 懒加载取址优先级、data: 与占位图/表情图跳过、drop 关键词、>=10 字符规则
---   6) 无 <p> 段落时沿用整体兜底（全文 + 全部图片）
+--   5) 懒加载取址优先级、data: 与占位图/表情图/评论头像跳过、drop 关键词、>=10 字符规则
+--   6) h2/h3/h4 小标题、<li> 列表项、<figcaption> 图注产出带 kind 的文本块
+--   7) 无 <p> 段落时沿用整体兜底（全文 + 全部图片）
 -- 运行方式：bash scripts/run_specs.sh（或直接 luajit spec/htmltext_spec.lua）
 -- 不依赖任何测试框架；所有断言通过时退出码为 0，否则为 1。
 
@@ -52,6 +53,20 @@ local function sig(blocks)
     return join(parts)
 end
 
+-- kind 感知的块序列序列化："H:" 标题 / "B:" 列表项 / "C:" 图注 / "T:" 普通段落 / "I:" 图片
+local function sigk(blocks)
+    local tags = { heading = "H", bullet = "B", caption = "C" }
+    local parts = {}
+    for i, b in ipairs(blocks) do
+        if b.img then
+            parts[i] = "I:" .. b.img
+        else
+            parts[i] = (tags[b.kind] or "T") .. ":" .. b.text
+        end
+    end
+    return join(parts)
+end
+
 -- 块序列中的图片地址列表
 local function img_urls(blocks)
     local urls = {}
@@ -89,16 +104,24 @@ do
 end
 
 ----------------------------------------------------------------------
--- <figure> 内图片收集（少数派风格）；figure 不产出文本块
+-- <figure> 内图片与 <figcaption> 图注（少数派风格）
 ----------------------------------------------------------------------
 do
     local html = '<p>导语：正文文字。</p>'
         .. '<figure><img src="https://ex.com/fig.jpg"><figcaption>图注文字说明</figcaption></figure>'
     local blocks = htmltext.blocks(html, nil)
-    eq(sig(blocks), join({
+    eq(sigk(blocks), join({
         "T:导语：正文文字。",
         "I:https://ex.com/fig.jpg",
-    }), "figure 内图片被收集，figcaption 文本不产出块")
+        "C:图注文字说明",
+    }), "figure 内图片与 figcaption 图注按文档顺序收集")
+
+    local short = htmltext.blocks('<p>导语：正文文字。</p>'
+        .. '<figure><img src="https://ex.com/fig2.jpg"><figcaption>短注</figcaption></figure>', nil)
+    eq(sigk(short), join({
+        "T:导语：正文文字。",
+        "I:https://ex.com/fig2.jpg",
+    }), "短图注（<10 字节）被过滤，图片仍保留")
 end
 
 ----------------------------------------------------------------------
@@ -130,6 +153,54 @@ do
         "T:第二段文字，长度足够。",
         "I:https://ex.com/loose2.jpg",
     }), "混合文档：块序列严格按源码位置排列")
+end
+
+----------------------------------------------------------------------
+-- 小标题：h2/h3/h4 按文档顺序产出 heading 块（不适用 >=10 字节规则）
+----------------------------------------------------------------------
+do
+    local html = '<p>第一段正文文字，长度足够。</p>'
+        .. '<h2>章节标题甲</h2>'
+        .. '<p>第二段正文文字，长度足够。</p>'
+        .. '<h3>短题</h3>'
+        .. '<h4>四级小标题乙</h4>'
+        .. '<p>第三段正文文字，长度足够。</p>'
+    local blocks = htmltext.blocks(html, nil)
+    eq(sigk(blocks), join({
+        "T:第一段正文文字，长度足够。",
+        "H:章节标题甲",
+        "T:第二段正文文字，长度足够。",
+        "H:短题",
+        "H:四级小标题乙",
+        "T:第三段正文文字，长度足够。",
+    }), "h2/h3/h4 与段落按文档顺序混排，短标题（<10 字节）也保留")
+    eq(blocks[2].kind, "heading", "标题块 kind 为 heading")
+
+    local empty = htmltext.blocks('<p>正文文字足够长。</p><h2></h2><h3>   </h3>', nil)
+    eq(sig(empty), join({ "T:正文文字足够长。" }), "空标题（无有效文本）不产出块")
+end
+
+----------------------------------------------------------------------
+-- 列表项：<li> 产出 bullet 块；<10 字节与内含 <p> 的列表项跳过
+----------------------------------------------------------------------
+do
+    local html = '<p>导语段落文字，长度足够。</p>'
+        .. '<ul><li>列表项一，文字足够长。</li><li>短</li>'
+        .. '<li>列表项二，文字足够长。</li></ul>'
+    local blocks = htmltext.blocks(html, nil)
+    eq(sigk(blocks), join({
+        "T:导语段落文字，长度足够。",
+        "B:列表项一，文字足够长。",
+        "B:列表项二，文字足够长。",
+    }), "li 产出 bullet 块，<10 字节列表项被过滤")
+
+    local nested = '<p>正文导语文字，长度足够。</p>'
+        .. '<ul><li><p>列表内段落文字，足够长。</p></li></ul>'
+    local nested_blocks = htmltext.blocks(nested, nil)
+    eq(sigk(nested_blocks), join({
+        "T:正文导语文字，长度足够。",
+        "T:列表内段落文字，足够长。",
+    }), "内含 <p> 的 li 整项跳过（其段落由 p 路径收集，无重复）")
 end
 
 ----------------------------------------------------------------------
@@ -186,6 +257,22 @@ do
 end
 
 ----------------------------------------------------------------------
+-- sspai 评论头像缩略图跳过（thumbnail/!32x32r 与 /avatar/）
+----------------------------------------------------------------------
+do
+    local html = '<p>正文文字足够长。<img src="https://cdn.sspai.com/thumbnail/!32x32r/abc.png">'
+        .. '<img src="https://cdn.sspai.com/avatar/u123.jpg">'
+        .. '<img src="https://cdn.sspai.com/realshot.jpg">收尾。</p>'
+    local blocks = htmltext.blocks(html, nil)
+    eq(img_urls(blocks), join({ "https://cdn.sspai.com/realshot.jpg" }),
+        "评论头像缩略图被跳过，正文配图保留")
+    eq(sig(blocks), join({
+        "T:正文文字足够长。收尾。",
+        "I:https://cdn.sspai.com/realshot.jpg",
+    }), "头像所在段落的文本仍正常产出")
+end
+
+----------------------------------------------------------------------
 -- drop 关键词：命中段落文本被丢弃，段内图片连带丢弃
 ----------------------------------------------------------------------
 do
@@ -194,6 +281,24 @@ do
     local blocks = htmltext.blocks(html, { "广告" })
     eq(sig(blocks), join({ "T:正常段落，文字足够长。" }),
         "drop 关键词命中段落（含段内图片）整段丢弃")
+end
+
+----------------------------------------------------------------------
+-- drop 关键词同样作用于标题 / 列表项 / 图注
+----------------------------------------------------------------------
+do
+    local html = '<p>正常段落，文字足够长。</p>'
+        .. '<h2>推广专区标题</h2>'
+        .. '<ul><li>广告位列表项文字</li></ul>'
+        .. '<h3>正常小节标题</h3>'
+        .. '<figure><img src="https://ex.com/shot.jpg">'
+        .. '<figcaption>广告图注说明文字</figcaption></figure>'
+    local blocks = htmltext.blocks(html, { "推广", "广告" })
+    eq(sigk(blocks), join({
+        "T:正常段落，文字足够长。",
+        "H:正常小节标题",
+        "I:https://ex.com/shot.jpg",
+    }), "命中 drop 关键词的标题/列表项/图注整块丢弃；figure 图片按 v2 规则独立收集")
 end
 
 ----------------------------------------------------------------------
