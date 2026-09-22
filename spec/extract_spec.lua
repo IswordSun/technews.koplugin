@@ -1,7 +1,7 @@
 -- spec/extract_spec.lua — technews 网页正文抽取（extract.lua）的单元测试
 --
--- 重点：多起始标记（starts）按序取首个命中并支持回退、旧接口 start 仍可用、
--- ends 取最早出现者、max_len 兜底窗口、drop 关键词过滤、空区域返回 nil。
+-- 重点：多起始标记（starts）取页面中最靠前的命中（与候选列表顺序无关）并支持回退、
+-- 旧接口 start 仍可用、ends 取最早出现者、max_len 兜底窗口、drop 关键词过滤、空区域返回 nil。
 -- 运行方式：bash scripts/run_specs.sh（或直接 luajit spec/extract_spec.lua）
 -- 不依赖任何测试框架；所有断言通过时退出码为 0，否则为 1。
 --
@@ -58,7 +58,7 @@ local function n_blocks(blocks)
 end
 
 ----------------------------------------------------------------------
--- starts：按序取首个命中的候选；其前内容排除、其后内容包含
+-- starts：取页面中最靠前的命中；其前内容排除、其后内容包含
 ----------------------------------------------------------------------
 do
     local html = table.concat({
@@ -243,6 +243,34 @@ do
     eq(n_blocks(blocks), 2, "strip 未命中：2 个文本块原样保留")
     contains(text_at(blocks, 1), "KEEP_ONE", "首段未被误删")
     contains(text_at(blocks, 2), "KEEP_TWO", "次段未被误删")
+end
+
+----------------------------------------------------------------------
+-- starts：两种模板容器同页时取最靠前者（派早报回归 2026-09-22）
+-- 文档顺序：正文容器（morning）在前、文末推荐容器（normal）在后；
+-- 候选列表把 normal 放在前面。修复前按列表顺序取首个命中，只抽到文末推荐区。
+-- （无结束标记时推荐区本就在窗口内，属既有行为，这里只锁定「正文必须被抽到」）
+----------------------------------------------------------------------
+do
+    local html = table.concat({
+        '<article class="morning__paper__article">',
+        '<h2>REGRESS_HEAD 早报小标题</h2>',
+        '<p>REGRESS_BODY 早报正文段落。</p>',
+        '</article>',
+        '<div class="article__main__content wangEditor-txt">',
+        '<h2>REGRESS_TAIL 文末推荐小标题</h2>',
+        '<p>REGRESS_TAIL_BODY 文末推荐段落。</p>',
+        '</div>',
+    })
+    local blocks = extract.blocks(html, {
+        starts = {
+            '<div class="article__main__content wangEditor-txt"', -- 列表在前
+            '<article class="morning__paper__article"',
+        },
+    })
+    ok(n_blocks(blocks) >= 2, "双模板同页：正文内容进入结果（≥2 块）")
+    contains(text_at(blocks, 1), "REGRESS_HEAD", "结果首块为正文容器的小标题（最靠前命中）")
+    contains(text_at(blocks, 2), "REGRESS_BODY", "结果第二块为正文容器的段落")
 end
 
 ----------------------------------------------------------------------

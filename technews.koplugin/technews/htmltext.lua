@@ -93,7 +93,8 @@ end
 -- 图片来源：<p> 内（原有逻辑）、<figure> 内（少数派风格）、以及不在任何
 -- <p>/<figure> 内的独立 <img>；全部按源码位置排序、同一张图只收录一次。
 -- @param html HTML 片段（可含转义或 CDATA）
--- @param drop_keywords 命中即丢弃的关键词（作用于文本块，段落命中时连带丢弃段内图片）
+-- @param drop_keywords 命中即丢弃的关键词（作用于文本块，段落命中时连带丢弃段内图片；
+--        图片 URL 命中时同样丢弃，用于兜底评论头像 / 表情类社区图）
 -- @return 块数组
 function htmltext.blocks(html, drop_keywords)
     if not html or html == "" then return {} end
@@ -208,7 +209,8 @@ function htmltext.blocks(html, drop_keywords)
     local blocks, seen_img = {}, {}
     for _, it in ipairs(items) do
         if it.kind == "img" then
-            if not seen_img[it.pos] then
+            -- 图片 URL 命中 drop 关键词同样丢弃（如少数派评论区残留的 community/ 头像与表情）
+            if not seen_img[it.pos] and not dropped(it.value, drop_keywords) then
                 seen_img[it.pos] = true
                 blocks[#blocks + 1] = { img = it.value }
             end

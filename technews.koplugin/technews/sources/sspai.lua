@@ -42,6 +42,7 @@ return {
             "sspai.com/mall",
             "shop549593764.taobao.com",
             "xiaohongshu.com/user/profile",
+            "community/", -- 评论区头像 / 表情图（emoji 反应区可能落在剥离范围外，兜底丢弃）
         },
     },
 }

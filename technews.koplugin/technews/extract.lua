@@ -17,7 +17,7 @@ local extract = {}
 -- }
 -- @return 块数组 | nil
 -- 多起始标记（starts）用于同一站点存在多套模板的情况（如少数派：普通文章
--- 与派早报的正文容器不同），逐个试到命中为止；均未命中返回 nil。
+-- 与派早报的正文容器不同），取页面中最靠前的命中；均未命中返回 nil。
 
 -- 按 strip 规则剥离区域内的内嵌区块（全部纯文本匹配）：
 -- 反复定位 from，删除 [from .. 其后最早的 to)；若 to 一个都没命中，删到区域末尾。
@@ -44,19 +44,23 @@ end
 
 function extract.blocks(html, opts)
     if not html or type(opts) ~= "table" then return nil end
-    local marker = opts.start
+    -- 候选起始标记取页面中「最靠前」的命中：多模板站点可能出现同类容器在后段
+    -- 复现的情况（如少数派派早报：正文在前，文末推荐区又用了普通文章的容器），
+    -- 按列表顺序取首个命中会抽到文末区块，把正文整段丢掉。
+    local marker, marker_pos
     if type(opts.starts) == "table" and #opts.starts > 0 then
-        for _, s in ipairs(opts.starts) do
-            if html:find(s, 1, true) then
-                marker = s
-                break
+        for _, candidate in ipairs(opts.starts) do
+            local p = html:find(candidate, 1, true)
+            if p and (not marker_pos or p < marker_pos) then
+                marker, marker_pos = candidate, p
             end
         end
+    else
+        marker = opts.start
+        marker_pos = marker and html:find(marker, 1, true)
     end
-    if not marker then return nil end
-    local start = html:find(marker, 1, true)
-    if not start then return nil end
-    start = start + #marker
+    if not marker or not marker_pos then return nil end
+    local start = marker_pos + #marker
     local stop = start + (opts.max_len or 30000)
     for _, end_marker in ipairs(opts.ends or {}) do
         local p = html:find(end_marker, start, true)
