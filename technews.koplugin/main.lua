@@ -44,6 +44,7 @@ local imgurl = require("technews.imgurl")
 local rss = require("technews.rss")
 local storage = require("technews.storage")
 local subscriptions = require("technews.subscriptions")
+local updater = require("technews.updater")
 local window = require("technews.window")
 
 -- 全部可用订阅源（有序）；新增源只需在 sources/registry.lua 追加一行
@@ -55,7 +56,7 @@ local MAX_IMAGES_PER_ISSUE = 150
 local TechNews = WidgetContainer:extend{
     name = "technews",
     is_doc_only = false,
-    version = "0.1.3",
+    version = "0.1.4",
 }
 
 -- 自测只执行一次：插件用 dofile 加载，模块级变量会随 UI 重建被重置，
@@ -223,6 +224,8 @@ end
 function TechNews:init()
     storage:init()
     storage:cleanup(7)   -- 保留最近 7 期
+    -- 上次在线更新若留下回滚副本，能走到这里说明新版本可用，清掉备份
+    pcall(updater.cleanup_backup)
     self.ui.menu:registerToMainMenu(self)
     logger.info("technews initialized")
 
@@ -325,23 +328,26 @@ function TechNews:addToMainMenu(menu_items)
     if self:isTechNewsDocument() then
         menu_items.technews_favorite = {
             text_func = function()
-                local article = self:currentActionableArticle()
-                if article and favorites.is_favorited(article.title) then
+                local ctx = self:currentFavoriteContext()
+                if ctx and ctx.sub_favorited then
+                    return "取消收藏当前小篇"
+                end
+                if ctx and ctx.whole_favorited then
                     return "取消收藏当前文章"
                 end
                 return "收藏当前文章"
             end,
             sorting_hint = "tools",
             callback = function()
-                local article, issue_path = self:currentActionableArticle()
-                if not article then
+                local ctx = self:currentFavoriteContext()
+                if not ctx then
                     UIManager:show(InfoMessage:new{
                         text = "当前文章不支持收藏\n（未找到该期资讯的元数据）",
                         timeout = 3,
                     })
                     return
                 end
-                self:toggleFavorite(article, issue_path)
+                self:toggleFavorite(ctx.article, ctx.issue_path, ctx.section_index)
             end,
         }
         menu_items.technews_close = {
@@ -389,7 +395,10 @@ function TechNews:openHome()
         end
         if item.keep_menu_open and item.sub_item_table == nil then
             if item.callback then item.callback() end
-            menu_self:updateItems()
+            -- 抓取类条目可能在回调里已打开阅读器（ShowingReader 已收起首页），此时不再刷新
+            if not menu_self._closed_by_reader then
+                menu_self:updateItems()
+            end
             return true
         end
         return Menu.onMenuSelect(menu_self, item)
@@ -397,6 +406,15 @@ function TechNews:openHome()
     home_menu.close_callback = function()
         self._home_menu = nil
         UIManager:close(home_menu)
+    end
+    -- 打开阅读器时收起首页：否则首页残留在窗口栈里，之后「关闭并返回」重建
+    -- 首页会被 _home_menu 守卫挡掉，首页就再也打不开（实测隐患）
+    home_menu.onShowingReader = function(menu_self)
+        menu_self.dithered = nil
+        menu_self._closed_by_reader = true
+        if menu_self.close_callback then
+            menu_self.close_callback()
+        end
     end
     self._home_menu = home_menu
     UIManager:show(home_menu)
@@ -410,10 +428,14 @@ function TechNews:getHomeItems()
     return {
         {
             text = "打开今日资讯",
+            -- keep_menu_open：抓取期间进度显示在首页之上，失败也能留在首页重试；
+            -- 打开阅读器时由首页的 onShowingReader 正常收起（见 openHome）
+            keep_menu_open = true,
             callback = function() self:openMergedIssue() end,
         },
         {
             text = "重新抓取今日",
+            keep_menu_open = true, -- 取消「清除缓存」确认框后首页保持不丢
             callback = function() self:confirmRefetch() end,
         },
         {
@@ -453,6 +475,7 @@ function TechNews:getSourceReadItems()
     for _, source in ipairs(subscriptions.enabled(registry, self:sourceSetting())) do
         items[#items + 1] = {
             text = source.menu_label or (source.name .. " · 今日资讯"),
+            keep_menu_open = true, -- 抓取期间保持首页（同「打开今日资讯」）
             callback = function() self:openIssue(source.id) end,
         }
     end
@@ -521,6 +544,23 @@ function TechNews:getSettingItems()
                 not self:withImages())
             -- 切换后当天缓存作废，下次打开重新生成
             storage:clear_date(today_str())
+        end,
+    }
+    items[#items + 1] = {
+        text_func = function()
+            if self._pending_release then
+                return "更新到 v" .. self._pending_release.version
+            end
+            return "检查更新"
+        end,
+        keep_menu_open = true, -- 确认框 / 下载进度显示在首页之上
+        callback = function()
+            local release = self._pending_release
+            if release then
+                self:installUpdate(release)
+            else
+                self:checkForUpdates()
+            end
         end,
     }
     items[#items + 1] = {
@@ -652,7 +692,7 @@ function TechNews:onShowTechNewsQuickMenu()
     if top_widget.name == "technews_quickmenu" then
         return true
     end
-    local article, issue_path = self:currentActionableArticle()
+    local article, issue_path, section_index = self:currentActionableArticle()
     local dialog
     local buttons = {}
     local first_row = { {
@@ -665,12 +705,13 @@ function TechNews:onShowTechNewsQuickMenu()
         end,
     } }
     if article then
-        local favorited = favorites.is_favorited(article.title)
+        local ctx = self:favoriteContext(article, section_index)
+        local favorited = ctx and (ctx.sub_favorited or ctx.whole_favorited)
         first_row[#first_row + 1] = {
             text = favorited and "取消收藏" or "收藏文章",
             callback = function()
                 UIManager:close(dialog)
-                self:toggleFavorite(article, issue_path)
+                self:toggleFavorite(article, issue_path, section_index)
             end,
         }
     end
@@ -1011,7 +1052,9 @@ function TechNews:openEpub(path)
 end
 
 --- 当前阅读的文章条目及其所在期路径；任一条件不满足返回 nil。
--- 判定链：有文档 → 文档旁有可读 sidecar → 定位当前章节标题 → 与 sidecar 条目精确匹配。
+--- 判定链：有文档 → 文档旁有可读 sidecar → 定位当前章节标题 → 与 sidecar 条目精确匹配。
+--- 标题若是文内小标题（二级目录条目），额外返回第三值 section_index（1 起）：
+--- 位于小标题分区内时，收藏可选择「整篇 / 本小篇」。
 function TechNews:currentIssueArticle()
     local ui = self.ui
     local document = ui and ui.document
@@ -1069,6 +1112,11 @@ function TechNews:currentIssueArticle()
         if item.title == title then
             return item, issue_path
         end
+        -- 标题命中某条目的文内小标题（二级目录条目）→ 返回该条目与小节序号
+        local section_index = favorites.section_index(item, title)
+        if section_index then
+            return item, issue_path, section_index
+        end
     end
     return nil
 end
@@ -1085,10 +1133,11 @@ function TechNews:favoriteEntryForDocument(path)
     return nil
 end
 
---- 可操作的当前文章：优先本期 sidecar（每日缓存期），其次按收藏快照反查索引（阅读收藏时）
+--- 可操作的当前文章：优先本期 sidecar（每日缓存期），其次按收藏快照反查索引（阅读收藏时）。
+--- 跟随 currentIssueArticle 返回 (article, issue_path, section_index)。
 function TechNews:currentActionableArticle()
-    local article, issue_path = self:currentIssueArticle()
-    if article then return article, issue_path end
+    local article, issue_path, section_index = self:currentIssueArticle()
+    if article then return article, issue_path, section_index end
     local doc_path = self.ui and self.ui.document and self.ui.document.file
     local entry = self:favoriteEntryForDocument(doc_path)
     if entry then
@@ -1101,17 +1150,43 @@ function TechNews:currentActionableArticle()
     return nil
 end
 
---- 收藏/取消收藏当前文章（阅读器菜单入口）；收藏过程在 Trapper 协程内进行。
-function TechNews:toggleFavorite(article, issue_path)
-    local entry = favorites.find(article.title)
-    if entry then
-        favorites.remove(entry)
-        UIManager:show(InfoMessage:new{
-            text = "已取消收藏",
-            timeout = 2,
-        })
-        return
-    end
+--- 收藏上下文：站在带二级目录文章的小标题分区内时解析出子文章与两级收藏状态。
+-- 返回 { sub = 子文章或 nil, whole_favorited = bool, sub_favorited = bool }；article 缺失时 nil。
+function TechNews:favoriteContext(article, section_index)
+    if not article then return nil end
+    local sub = section_index and favorites.section_article(article, section_index) or nil
+    return {
+        sub = sub,
+        whole_favorited = favorites.is_favorited(article.title) and true or false,
+        sub_favorited = sub ~= nil and favorites.is_favorited(sub.title) and true or false,
+    }
+end
+
+--- 当前收藏上下文：解析文章/小节与两级收藏状态（菜单文案与动作共用入口）。
+-- 返回 { article, issue_path, section_index, sub, whole_favorited, sub_favorited }；无文章时 nil。
+function TechNews:currentFavoriteContext()
+    local article, issue_path, section_index = self:currentActionableArticle()
+    if not article then return nil end
+    local ctx = self:favoriteContext(article, section_index) or {}
+    ctx.article = article
+    ctx.issue_path = issue_path
+    ctx.section_index = section_index
+    return ctx
+end
+
+--- 取消收藏（按标题精确匹配）；整篇与小篇两条路径共用。
+function TechNews:removeFavorite(title)
+    local entry = favorites.find(title)
+    if not entry then return end
+    favorites.remove(entry)
+    UIManager:show(InfoMessage:new{
+        text = "已取消收藏",
+        timeout = 2,
+    })
+end
+
+--- 执行收藏（Trapper 协程内构建快照）；article 为整篇或某小节的子文章。
+function TechNews:doFavorite(article, issue_path)
     logger.info("technews favorite:", article.title, issue_path)
     Trapper:wrap(function()
         Trapper:info("收藏中…（点击可取消）")
@@ -1133,6 +1208,63 @@ function TechNews:toggleFavorite(article, issue_path)
             })
         end
     end)
+end
+
+--- 收藏/取消收藏当前文章（阅读器菜单与快捷菜单入口）。
+-- 带二级目录的文章里位于某小标题分区内时：本小篇已收藏 → 直接取消；
+-- 否则弹出「整篇 / 本小篇」选择框（按钮文案随两级已收藏状态变化）。
+function TechNews:toggleFavorite(article, issue_path, section_index)
+    local ctx = self:favoriteContext(article, section_index)
+    if not ctx then return end
+    if ctx.sub_favorited then
+        self:removeFavorite(ctx.sub.title)
+        return
+    end
+    if not ctx.sub and ctx.whole_favorited then
+        self:removeFavorite(article.title)
+        return
+    end
+    if ctx.sub then
+        self:showFavoriteChoice(article, issue_path, ctx)
+        return
+    end
+    self:doFavorite(article, issue_path)
+end
+
+--- 收藏范围选择框：收藏整篇 / 收藏本小篇（点击框外取消）
+function TechNews:showFavoriteChoice(article, issue_path, ctx)
+    local ButtonDialog = require("ui/widget/buttondialog")
+    local dialog
+    dialog = ButtonDialog:new{
+        name = "technews_favorite_choice",
+        title = "收藏",
+        title_align = "center",
+        buttons = { {
+            {
+                text = ctx.whole_favorited and "取消收藏整篇" or "收藏整篇文章",
+                callback = function()
+                    UIManager:close(dialog)
+                    if ctx.whole_favorited then
+                        self:removeFavorite(article.title)
+                    else
+                        self:doFavorite(article, issue_path)
+                    end
+                end,
+            },
+            {
+                text = ctx.sub_favorited and "取消收藏本小篇" or "收藏本小篇",
+                callback = function()
+                    UIManager:close(dialog)
+                    if ctx.sub_favorited then
+                        self:removeFavorite(ctx.sub.title)
+                    else
+                        self:doFavorite(ctx.sub, issue_path)
+                    end
+                end,
+            },
+        } },
+    }
+    UIManager:show(dialog)
 end
 
 --- 统一的抓取失败提示（区分网络问题，并附带重试）
@@ -1315,6 +1447,85 @@ function TechNews:confirmClearCache()
             })
         end,
     })
+end
+
+--- 检查在线更新（设置菜单入口）：GitHub Releases 取最新版，比较版本号
+function TechNews:checkForUpdates()
+    Trapper:wrap(function()
+        Trapper:info("正在检查更新…（点击可取消）")
+        local release, err = updater.fetch_latest_release()
+        Trapper:clear()
+        if not release then
+            UIManager:show(InfoMessage:new{
+                text = "检查更新失败：" .. tostring(err or "未知错误"),
+                timeout = 4,
+            })
+            return
+        end
+        if not updater.is_newer(release.version, self.version) then
+            self._pending_release = nil
+            UIManager:show(InfoMessage:new{
+                text = "已是最新版本 v" .. tostring(self.version),
+                timeout = 3,
+            })
+            return
+        end
+        -- 记下待装版本：菜单文案变为「更新到 vX」，再次点击可直接安装
+        self._pending_release = release
+        if self._home_menu then self._home_menu:updateItems() end
+        local ConfirmBox = require("ui/widget/confirmbox")
+        UIManager:show(ConfirmBox:new{
+            text = string.format("发现新版本 v%s（当前 v%s）\n\n是否下载并安装？",
+                release.version, tostring(self.version)),
+            ok_text = "下载并安装",
+            cancel_text = "取消",
+            ok_callback = function()
+                self:installUpdate(release)
+            end,
+        })
+    end)
+end
+
+--- 下载并安装更新（Trapper 协程内进行，带下载进度与取消）
+function TechNews:installUpdate(release)
+    local zip_path = storage.dir .. "technews-update.zip"
+    Trapper:wrap(function()
+        Trapper:info("正在下载 v" .. release.version .. "…（点击可取消）")
+        local ok, err = updater.download(release.zip_url, zip_path, function(received)
+            return Trapper:info(string.format("正在下载 v%s… %.1f MB（点击可取消）",
+                release.version, received / 1048576))
+        end)
+        if not ok then
+            Trapper:clear()
+            UIManager:show(InfoMessage:new{
+                text = "下载失败：" .. tostring(err),
+                timeout = 4,
+            })
+            return
+        end
+        Trapper:info("正在安装 v" .. release.version .. "…")
+        local installed, install_err = updater.install(zip_path, release.version)
+        os.remove(zip_path) -- 安装成功与否都清掉下载文件（失败时也避免占空间）
+        Trapper:clear()
+        if not installed then
+            UIManager:show(InfoMessage:new{
+                text = "安装失败：" .. tostring(install_err),
+                timeout = 5,
+            })
+            return
+        end
+        self._pending_release = nil
+        local ConfirmBox = require("ui/widget/confirmbox")
+        UIManager:show(ConfirmBox:new{
+            text = string.format("已更新到 v%s\n\n是否立即重启 KOReader 以生效？",
+                release.version),
+            ok_text = "重启",
+            cancel_text = "稍后",
+            ok_callback = function()
+                UIManager:restartKOReader()
+            end,
+        })
+    end)
 end
 
 return TechNews

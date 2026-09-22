@@ -85,4 +85,104 @@ function http.get(url, block_timeout, total_timeout, retries, opts)
     return nil, last_err
 end
 
+--- 流式下载到文件（进度回调、字节上限、手动跟随重定向；不重试——多源重试由调用方负责）。
+-- @param url
+-- @param dest_path 目标路径（目录须已存在）；先写 .part 再改名，失败清理
+-- @param opts { on_progress = function(received)（返回 false 中止）, max_bytes =,
+--               referer =, block_timeout =, total_timeout = }
+-- @return true | nil, 错误信息
+function http.download(url, dest_path, opts)
+    opts = opts or {}
+    local tmp_path = dest_path .. ".part"
+    local target = url
+
+    -- GitHub Release 资产会 302 到 objects.githubusercontent.com；LuaSec 自带的
+    -- 跨主机 https 重定向不可靠，这里手动跟随（最多 4 跳）
+    for _ = 1, 4 do
+        os.remove(tmp_path)
+        local file, open_err = io.open(tmp_path, "wb")
+        if not file then
+            return nil, "无法写入文件（" .. tostring(open_err) .. "）"
+        end
+
+        local headers = { ["User-Agent"] = UA }
+        if opts.referer then
+            headers["Referer"] = opts.referer
+        end
+        local received, abort_err = 0, nil
+        local file_sink = ltn12.sink.file(file)
+        local sink = function(chunk, err)
+            if chunk then
+                received = received + #chunk
+                if opts.max_bytes and received > opts.max_bytes then
+                    abort_err = "文件超过大小上限"
+                    file_sink(nil, abort_err)
+                    return nil, abort_err
+                end
+                if opts.on_progress and opts.on_progress(received) == false then
+                    abort_err = "已取消"
+                    file_sink(nil, abort_err)
+                    return nil, abort_err
+                end
+            end
+            return file_sink(chunk, err)
+        end
+
+        socketutil:set_timeout(
+            opts.block_timeout or socketutil.FILE_BLOCK_TIMEOUT,
+            opts.total_timeout or 300)
+        local code, resp_headers = socket.skip(1, https.request{
+            url = target,
+            headers = headers,
+            sink = sink,
+            redirect = false,
+        })
+        socketutil:reset_timeout()
+        pcall(function() file:close() end)
+
+        if abort_err then
+            os.remove(tmp_path)
+            return nil, abort_err
+        end
+        if not code then
+            os.remove(tmp_path)
+            return nil, tostring(resp_headers) or "request failed"
+        end
+        if type(code) ~= "number" then
+            os.remove(tmp_path)
+            return nil, "连接失败（" .. tostring(code) .. "）"
+        end
+        if code == 301 or code == 302 or code == 303 or code == 307 or code == 308 then
+            local location = resp_headers and resp_headers.location
+            os.remove(tmp_path)
+            if not location or location == "" then
+                return nil, "重定向缺少地址"
+            end
+            target = location
+        elseif code == 200 then
+            os.remove(dest_path)
+            if os.rename(tmp_path, dest_path) then
+                return true
+            end
+            -- 跨文件系统兜底：复制
+            local src = io.open(tmp_path, "rb")
+            local dst = src and io.open(dest_path, "wb")
+            if not (src and dst) then
+                if src then src:close() end
+                os.remove(tmp_path)
+                return nil, "无法保存下载文件"
+            end
+            dst:write(src:read("*all"))
+            src:close()
+            dst:close()
+            os.remove(tmp_path)
+            return true
+        else
+            os.remove(tmp_path)
+            return nil, "HTTP " .. tostring(code)
+        end
+    end
+    return nil, "重定向次数过多"
+end
+
 return http
