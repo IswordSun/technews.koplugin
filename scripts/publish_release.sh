@@ -29,7 +29,7 @@ echo "打包完成: ${ZIP}（版本 ${TAG}）"
 if [ "${1:-}" = "--notes-file" ] && [ -n "${2:-}" ]; then
     NOTES_ARGS=(--notes-file "$2")
 else
-    NOTES_ARGS=(--notes "发布 $TAG。设备端可在插件「设置 → 检查更新」中直接升级。")
+    NOTES_ARGS=(--notes "发布 ${TAG}。设备端可在插件「设置 → 检查更新」中直接升级。")
 fi
 
 if gh release view "$TAG" >/dev/null 2>&1; then
