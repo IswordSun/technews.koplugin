@@ -1486,15 +1486,13 @@ function TechNews:checkForUpdates()
     end)
 end
 
---- 下载并安装更新（Trapper 协程内进行，带下载进度与取消）
+--- 下载并安装更新（Trapper 协程内进行；下载期间不做逐块进度——
+-- http.download 的回调在 socket 回调（C 调用栈）里，不能 yield）
 function TechNews:installUpdate(release)
     local zip_path = storage.dir .. "technews-update.zip"
     Trapper:wrap(function()
-        Trapper:info("正在下载 v" .. release.version .. "…（点击可取消）")
-        local ok, err = updater.download(release.zip_url, zip_path, function(received)
-            return Trapper:info(string.format("正在下载 v%s… %.1f MB（点击可取消）",
-                release.version, received / 1048576))
-        end)
+        Trapper:info("正在下载 v" .. release.version .. "…（完成后自动安装）")
+        local ok, err = updater.download(release.zip_url, zip_path)
         if not ok then
             Trapper:clear()
             UIManager:show(InfoMessage:new{

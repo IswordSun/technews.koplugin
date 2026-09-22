@@ -90,6 +90,9 @@ end
 -- @param dest_path 目标路径（目录须已存在）；先写 .part 再改名，失败清理
 -- @param opts { on_progress = function(received)（返回 false 中止）, max_bytes =,
 --               referer =, block_timeout =, total_timeout = }
+-- 注意：on_progress 在 LuaSocket 的 socket 回调（C 调用栈）中执行，
+-- 禁止在其中调用会 yield 的函数（如 Trapper:info），否则报
+-- "attempt to yield across C-call boundary" 并中断下载；只可做纯 Lua 处理。
 -- @return true | nil, 错误信息
 function http.download(url, dest_path, opts)
     opts = opts or {}
