@@ -306,6 +306,53 @@ do
 end
 
 ----------------------------------------------------------------------
+-- 样本六：文内小标题 → 二级目录（正文锚点 + nav/ncx 嵌套；单条不建子目录）
+-- 条目 1（2 个小标题）应产生嵌套子目录；条目 2（1 个）保持平铺、无锚点。
+-- 两个来源 → 走分组目录；ncx 深度应为 3（组 → 文章 → 小标题）
+----------------------------------------------------------------------
+
+local digest = {
+    title = "科技资讯 · 2026-09-22",
+    date = "2026-09-22",
+    items = {
+        { title = "早报｜示例", source_name = "爱范儿", blocks = {
+            { text = "开场白。" },
+            { text = "曝 A 量产良率仅六成", kind = "heading" },
+            { text = "正文一。" },
+            { text = "曝 B 筹备新一轮融资", kind = "heading" },
+            { text = "正文二。" },
+        } },
+        { title = "单标题文章", source_name = "IT之家", blocks = {
+            { text = "唯一小标题", kind = "heading" },
+            { text = "正文。" },
+        } },
+    },
+}
+
+local digest_epub = build_and_read(digest)
+
+do
+    contains(digest_epub, '<h3 id="h1">曝 A 量产良率仅六成</h3>', "小标题正文带锚点（h1）")
+    contains(digest_epub, '<h3 id="h2">曝 B 筹备新一轮融资</h3>', "小标题正文带锚点（h2）")
+    contains(digest_epub,
+        '<li><a href="text/article-001.xhtml">早报｜示例</a><ol>',
+        "nav：早报条目内嵌子目录 <ol>")
+    contains(digest_epub,
+        '<li><a href="text/article-001.xhtml#h1">曝 A 量产良率仅六成</a></li>',
+        "nav：子目录项指向 h1 锚点")
+    contains(digest_epub, '<content src="text/article-001.xhtml#h1"/>',
+        "ncx：子 navPoint 指向 h1 锚点")
+    contains(digest_epub, '<content src="text/article-001.xhtml#h2"/>',
+        "ncx：子 navPoint 指向 h2 锚点")
+    contains(digest_epub, '<meta name="dtb:depth" content="3"/>',
+        "ncx：深度随子目录加一级（组→文章→小标题）")
+    contains(digest_epub, '<li><a href="text/article-002.xhtml">单标题文章</a></li>',
+        "单条小标题不建子目录（条目平铺）")
+    contains(digest_epub, "<h3>唯一小标题</h3>", "单条小标题正文无锚点（与从前一致）")
+    ok(pos(digest_epub, "article-002.xhtml#") == nil, "单标题文章无任何锚点目录项")
+end
+
+----------------------------------------------------------------------
 -- 可选：用 unzip -t 校验 ZIP 完整性（环境中无 unzip 时跳过）
 ----------------------------------------------------------------------
 

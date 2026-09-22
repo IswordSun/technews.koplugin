@@ -173,25 +173,37 @@ local function toc_groups(toc)
     return groups
 end
 
+-- 目录项 → nav 的 <li>；带 subs（文内小标题）时内嵌一层锚点 <ol>
+local function nav_li(entry)
+    local link = '<a href="text/' .. entry.href .. '">' .. escape(entry.title) .. "</a>"
+    if not entry.subs then
+        return "<li>" .. link .. "</li>"
+    end
+    local nested = { "<ol>" }
+    for _, sub in ipairs(entry.subs) do
+        nested[#nested + 1] = '<li><a href="text/' .. entry.href .. "#" .. sub.anchor .. '">'
+            .. escape(sub.title) .. "</a></li>"
+    end
+    nested[#nested + 1] = "</ol>"
+    return "<li>" .. link .. table.concat(nested, "\n") .. "</li>"
+end
+
 local function build_nav(toc)
     local items = { "<ol>" }
     local groups = toc_groups(toc)
     if groups then
         -- 封面保持在顶层首位，其后每个来源一个 <li><span>标签</span><ol>…</ol></li>
-        items[#items + 1] = '<li><a href="text/' .. toc[1].href .. '">'
-            .. escape(toc[1].title) .. "</a></li>"
+        items[#items + 1] = nav_li(toc[1])
         for _, group in ipairs(groups) do
             items[#items + 1] = "<li><span>" .. escape(group.label) .. "</span><ol>"
             for _, entry in ipairs(group.entries) do
-                items[#items + 1] = '<li><a href="text/' .. entry.href .. '">'
-                    .. escape(entry.title) .. "</a></li>"
+                items[#items + 1] = nav_li(entry)
             end
             items[#items + 1] = "</ol></li>"
         end
     else
         for _, entry in ipairs(toc) do
-            items[#items + 1] = '<li><a href="text/' .. entry.href .. '">'
-                .. escape(entry.title) .. "</a></li>"
+            items[#items + 1] = nav_li(entry)
         end
     end
     items[#items + 1] = "</ol>"
@@ -205,29 +217,48 @@ local function build_ncx(toc, identifier, title)
     local points = {}
     local sequence = 0
     -- 生成 navPoint 头（id/playOrder 按文档顺序递增），尾部由调用方补齐
-    local function point_head(entry_title, entry_href)
+    local function point_head(entry_title, entry_href, fragment)
         sequence = sequence + 1
         return string.format('<navPoint id="nav-%d" playOrder="%d">', sequence, sequence)
             .. "<navLabel><text>" .. escape(entry_title) .. "</text></navLabel>"
-            .. '<content src="text/' .. entry_href .. '"/>'
+            .. '<content src="text/' .. entry_href
+            .. (fragment and ("#" .. fragment) or "") .. '"/>'
+    end
+    -- 目录项 → navPoint；带 subs（文内小标题）时内嵌一层锚点子节点
+    local function entry_point(entry)
+        if not entry.subs then
+            return point_head(entry.title, entry.href) .. "</navPoint>"
+        end
+        local children = {}
+        for _, sub in ipairs(entry.subs) do
+            children[#children + 1] = point_head(sub.title, entry.href, sub.anchor) .. "</navPoint>"
+        end
+        return point_head(entry.title, entry.href)
+            .. "\n" .. table.concat(children, "\n") .. "\n</navPoint>"
     end
     local groups = toc_groups(toc)
     local depth = 1
     if groups then
         depth = 2
-        points[#points + 1] = point_head(toc[1].title, toc[1].href) .. "</navPoint>"
+        points[#points + 1] = entry_point(toc[1])
         for _, group in ipairs(groups) do
             -- NCX 的 content 必填：父节点指向组内首条
             local parent = point_head(group.label, group.entries[1].href)
             local children = {}
             for _, entry in ipairs(group.entries) do
-                children[#children + 1] = point_head(entry.title, entry.href) .. "</navPoint>"
+                children[#children + 1] = entry_point(entry)
             end
             points[#points + 1] = parent .. "\n" .. table.concat(children, "\n") .. "\n</navPoint>"
         end
     else
         for _, entry in ipairs(toc) do
-            points[#points + 1] = point_head(entry.title, entry.href) .. "</navPoint>"
+            points[#points + 1] = entry_point(entry)
+        end
+    end
+    for _, entry in ipairs(toc) do
+        if entry.subs then
+            depth = depth + 1
+            break
         end
     end
     return [[<?xml version="1.0" encoding="utf-8"?>
@@ -273,12 +304,13 @@ function Epub.build(data, output_path)
     end
 
     -- 渲染一个内容块（文字或图片）；文字块按 kind 选择标签：
-    -- heading → <h3>（文章标题已是 h2，章节内小标题降一级）、bullet → p.bullet、
-    -- caption → p.caption，无 kind（普通段落）保持原有 <p>。
-    local function render_block(item, block)
+    -- heading → <h3>（文章标题已是 h2，章节内小标题降一级；anchor 供二级目录跳转）、
+    -- bullet → p.bullet、caption → p.caption，无 kind（普通段落）保持原有 <p>。
+    local function render_block(item, block, anchor)
         if block.text then
             if block.kind == "heading" then
-                return "<h3>" .. escape(block.text) .. "</h3>"
+                return "<h3" .. (anchor and (' id="' .. anchor .. '"') or "") .. ">"
+                    .. escape(block.text) .. "</h3>"
             elseif block.kind == "bullet" then
                 return '<p class="bullet">· ' .. escape(block.text) .. "</p>"
             elseif block.kind == "caption" then
@@ -313,7 +345,6 @@ function Epub.build(data, output_path)
     for index, item in ipairs(items) do
         local href = string.format("article-%03d.xhtml", index)
         local item_title = item.title or "（无标题）"
-        toc[#toc + 1] = { title = item_title, href = href, source = item.source_name }
         overview[#overview + 1] = '<li>'
             .. (item.source_name and ('<span class="src">【' .. escape(item.source_name) .. '】</span> ') or "")
             .. '<a href="' .. href .. '">' .. escape(item_title) .. "</a></li>"
@@ -325,9 +356,25 @@ function Epub.build(data, output_path)
             .. "</p>",
             "<h2>" .. escape(item_title) .. "</h2>",
         }
+        -- 文内小标题（kind=heading）收作二级目录：≥2 条才挂进目录（单条只多一行
+        -- 噪音），正文相应加锚点；无子目录的条目输出与从前完全一致
+        local subs, heading_total = {}, 0
+        if type(item.blocks) == "table" then
+            for _, block in ipairs(item.blocks) do
+                if block.text and block.kind == "heading" then
+                    heading_total = heading_total + 1
+                end
+            end
+        end
+        local with_subs = heading_total >= 2
         if type(item.blocks) == "table" and #item.blocks > 0 then
             for _, block in ipairs(item.blocks) do
-                local html = render_block(item, block)
+                local anchor
+                if with_subs and block.text and block.kind == "heading" then
+                    anchor = "h" .. (#subs + 1)
+                    subs[#subs + 1] = { title = block.text, anchor = anchor }
+                end
+                local html = render_block(item, block, anchor)
                 if html then
                     body_parts[#body_parts + 1] = html
                 end
@@ -342,6 +389,10 @@ function Epub.build(data, output_path)
         if item.link then
             body_parts[#body_parts + 1] = '<p class="link">原文：' .. escape(item.link) .. "</p>"
         end
+        toc[#toc + 1] = {
+            title = item_title, href = href, source = item.source_name,
+            subs = with_subs and subs or nil,
+        }
         chapters[#chapters + 1] = {
             href = href,
             title = item_title,
