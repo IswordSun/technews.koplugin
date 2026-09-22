@@ -41,8 +41,17 @@ local function le32(number)
         bit.band(bit.rshift(number, 16), 0xFF), bit.band(bit.rshift(number, 24), 0xFF))
 end
 
-local function make_zip(entries)
-    local local_headers, central = {}, {}
+-- 写入失败时统一收尾：关闭句柄、删除临时文件，抛出含路径的错误
+local function fail_write(file, temporary_path, err)
+    file:close()
+    os.remove(temporary_path)
+    error(string.format("写入 EPUB 失败：%s（%s）", temporary_path, tostring(err)))
+end
+
+-- 流式写入 ZIP：逐条写本地头与数据，仅累积小的中央目录记录（含正确字节偏移），
+-- 最后写中央目录与 EOCD。字节布局与旧版 make_zip 完全一致，只是不再整块驻留内存。
+local function write_zip(entries, file, temporary_path)
+    local central = {}
     local offset = 0
     for _, entry in ipairs(entries) do
         local name, data = entry.name, entry.data or ""
@@ -51,8 +60,10 @@ local function make_zip(entries)
             le32(0x04034b50), le16(20), le16(0), le16(0), le16(0), le16(0),
             le32(crc), le32(#data), le32(#data), le16(#name), le16(0), name,
         })
-        local_headers[#local_headers + 1] = header
-        local_headers[#local_headers + 1] = data
+        local wrote, werr = file:write(header)
+        if not wrote then fail_write(file, temporary_path, werr) end
+        wrote, werr = file:write(data)
+        if not wrote then fail_write(file, temporary_path, werr) end
         central[#central + 1] = table.concat({
             le32(0x02014b50), le16(20), le16(20), le16(0), le16(0), le16(0),
             le16(0), le32(crc), le32(#data), le32(#data), le16(#name),
@@ -61,10 +72,14 @@ local function make_zip(entries)
         offset = offset + #header + #data
     end
     local central_data = table.concat(central)
-    return table.concat(local_headers) .. central_data .. table.concat({
+    local eocd = table.concat({
         le32(0x06054b50), le16(0), le16(0), le16(#entries), le16(#entries),
         le32(#central_data), le32(offset), le16(0),
     })
+    local wrote, werr = file:write(central_data)
+    if not wrote then fail_write(file, temporary_path, werr) end
+    wrote, werr = file:write(eocd)
+    if not wrote then fail_write(file, temporary_path, werr) end
 end
 
 local function escape(value)
@@ -390,9 +405,14 @@ function Epub.build(data, output_path)
     local temporary_path = output_path .. ".part"
     local file, err = io.open(temporary_path, "wb")
     if not file then error(err) end
-    file:write(make_zip(entries))
+    write_zip(entries, file, temporary_path)
     file:close()
-    assert(os.rename(temporary_path, output_path))
+    local renamed, rename_err = os.rename(temporary_path, output_path)
+    if not renamed then
+        os.remove(temporary_path)
+        error(string.format("重命名 EPUB 失败：%s → %s（%s）",
+            temporary_path, output_path, tostring(rename_err)))
+    end
     return output_path
 end
 
