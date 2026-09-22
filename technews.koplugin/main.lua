@@ -287,7 +287,7 @@ function TechNews:addToMainMenu(menu_items)
     end
 end
 
---- 打开「科技资讯」全屏首页（TouchMenu 单 tab；条目见 getHomeItems）
+--- 打开「科技资讯」全屏首页（用 Menu 部件铺满全屏；条目见 getHomeItems）
 function TechNews:openHome()
     -- 首次使用：打开首页即引导选择订阅源（全局标记防 dofile 重载后重复弹出）
     if self:sourceSetting() == nil and not G_technews_sources_prompted then
@@ -297,81 +297,72 @@ function TechNews:openHome()
         end)
     end
 
-    -- 惰性加载：只有首页需要 TouchMenu（与 KOReader readermenu 同构）
-    local TouchMenu = require("ui/widget/touchmenu")
-    -- 全屏承载容器：CenterContainer 包一层，关闭时整层移除（参照 ReaderMenu:onShowMenu）
-    local menu_container = CenterContainer:new{
-        covers_header = true,
-        ignore = "height",
-        dimen = Device.screen:getSize(),
+    -- 全屏页用 Menu 部件（文件列表/目录同款；TouchMenu 是系统菜单那种「顶部部分高度面板」）
+    local Menu = require("ui/widget/menu")
+    local home_menu = Menu:new{
+        title = "科技资讯订阅",
+        item_table = self:getHomeItems(),
+        covers_fullscreen = true,
+        is_borderless = true,
+        is_popout = false,
+        title_bar_fm_style = true,
+        -- 不显示键盘快捷键字母列（模拟器有键盘会显示 Q/W/E…，真机无键盘不显示）
+        is_enable_shortcut = false,
     }
-    local home_menu = TouchMenu:new{
-        width = Device.screen:getWidth(),
-        -- TouchMenu 没有 title 字段（title 属于 Menu 部件）；tab 元信息（icon 等）
-        -- 与条目同表：唯一 tab 的本体即首页 item_table，icon 是左上角唯一的 tab 按钮
-        tab_item_table = { self:getHomeItems() },
-        show_parent = menu_container,
-    }
-    home_menu.close_callback = function()
-        UIManager:close(menu_container)
+    -- Menu 不识别 TouchMenu 的 keep_menu_open / sub_item_table_func，在此适配：
+    -- 1) sub_item_table_func 点击时解析，保持「展开时按当前启用集合生成」语义
+    -- 2) keep_menu_open 条目（开关/勾选类）执行后原地刷新，不关闭首页
+    -- 3) 其余条目沿用 Menu 默认：先 callback、后 close_callback 关闭首页
+    home_menu.onMenuSelect = function(menu_self, item)
+        if item.sub_item_table_func then
+            item.sub_item_table = item.sub_item_table_func()
+        end
+        if item.keep_menu_open and item.sub_item_table == nil then
+            if item.callback then item.callback() end
+            menu_self:updateItems()
+            return true
+        end
+        return Menu.onMenuSelect(menu_self, item)
     end
-    menu_container[1] = home_menu
-    UIManager:show(menu_container)
+    home_menu.close_callback = function()
+        self._home_menu = nil
+        UIManager:close(home_menu)
+    end
+    self._home_menu = home_menu
+    UIManager:show(home_menu)
 end
 
---- 首页条目表（作为 TouchMenu 唯一 tab，同时充当 item_table）
--- 关闭时机（已核对 touchmenu.lua 的 TouchMenu:onMenuSelect）：普通 callback 条目是
--- 「先执行 callback、返回后才 closeMenu」（只有 tap_input 才是先关后跑）；抓取经
--- Trapper:wrap 在首个进度 yield 时立即返回、随即由 TouchMenu 关闭，故无需手动先关菜单，
--- 进度框与 ConfirmBox 都会显示在随后关闭的首页之上，不受影响。
+--- 首页条目表（Menu 全屏页的 item_table）
+-- 关闭时机（已核对 menu.lua 的 Menu:onMenuSelect）：普通 callback 条目是「先执行
+-- callback、返回后才 close_callback 关闭首页」；抓取经 Trapper:wrap 在首个进度 yield
+-- 时立即返回、随即关闭首页，故无需手动先关菜单，进度框与 ConfirmBox 均显示在首页之上。
 function TechNews:getHomeItems()
-    local items = {
+    return {
         {
             text = "打开今日资讯",
             callback = function() self:openMergedIssue() end,
-        },
-        {
-            text = "分源阅读",
-            sub_item_table_func = function()
-                -- 每次展开按当前启用集合生成（订阅源设置改动后立即生效）
-                local source_items = {}
-                for _, source in ipairs(subscriptions.enabled(registry, self:sourceSetting())) do
-                    source_items[#source_items + 1] = {
-                        text = source.menu_label or (source.name .. " · 今日资讯"),
-                        callback = function() self:openIssue(source.id) end,
-                    }
-                end
-                return source_items
-            end,
-        },
-        {
-            text = "订阅源设置",
-            keep_menu_open = true,
-            sub_item_table_func = function()
-                return self:getSourceSettingItems()
-            end,
-        },
-        {
-            text = "包含图片",
-            keep_menu_open = true,
-            check_callback_updates_menu = true,
-            checked_func = function() return self:withImages() end,
-            callback = function(touchmenu_instance)
-                G_reader_settings:saveSetting("technews_with_images",
-                    not self:withImages())
-                -- 切换后当天缓存作废，下次打开重新生成
-                storage:clear_date(today_str())
-                -- 带 check_callback_updates_menu 的条目由 callback 负责刷新勾选
-                if touchmenu_instance then touchmenu_instance:updateItems() end
-            end,
         },
         {
             text = "重新抓取今日",
             callback = function() self:confirmRefetch() end,
         },
         {
-            text = "清理全部缓存",
-            callback = function() self:confirmClearCache() end,
+            text = "我的收藏",
+            sub_item_table_func = function()
+                return self:getFavoriteItems()
+            end,
+        },
+        {
+            text = "分源阅读",
+            sub_item_table_func = function()
+                return self:getSourceReadItems()
+            end,
+        },
+        {
+            text = "设置",
+            sub_item_table_func = function()
+                return self:getSettingItems()
+            end,
         },
         {
             text = "关于",
@@ -384,25 +375,17 @@ function TechNews:getHomeItems()
             end,
         },
     }
-    -- 「我的收藏」紧跟「打开今日资讯」；「管理收藏」仅在确有收藏时出现
-    table.insert(items, 2, {
-        text = "我的收藏",
-        sub_item_table_func = function()
-            return self:getFavoriteItems()
-        end,
-    })
-    if #favorites.load() > 0 then
-        table.insert(items, 3, {
-            text = "管理收藏",
-            keep_menu_open = true,
-            sub_item_table_func = function()
-                return self:getFavoriteManageItems()
-            end,
-        })
+end
+
+--- 「分源阅读」子菜单：每次展开按当前启用集合生成（订阅源设置改动后立即生效）
+function TechNews:getSourceReadItems()
+    local items = {}
+    for _, source in ipairs(subscriptions.enabled(registry, self:sourceSetting())) do
+        items[#items + 1] = {
+            text = source.menu_label or (source.name .. " · 今日资讯"),
+            callback = function() self:openIssue(source.id) end,
+        }
     end
-    -- 单 tab 元信息：icon 为左上角 tab 按钮；text 供菜单搜索展示
-    items.icon = "home"
-    items.text = "科技资讯订阅"
     return items
 end
 
@@ -411,13 +394,13 @@ function TechNews:getSourceSettingItems()
     local items = {}
     for _, source in ipairs(registry) do
         items[#items + 1] = {
-            text = source.name,
-            keep_menu_open = true,
-            check_callback_updates_menu = true,
-            checked_func = function()
-                return subscriptions.is_enabled(source, self:sourceSetting())
+            text_func = function()
+                local mark = subscriptions.is_enabled(source, self:sourceSetting())
+                    and "✓ " or "▢ "
+                return mark .. source.name
             end,
-            callback = function(touchmenu_instance)
+            keep_menu_open = true,
+            callback = function()
                 -- 以当前启用集合为基准翻转本项，另存为新集合
                 local ids = {}
                 for _, adapter in ipairs(subscriptions.enabled(registry, self:sourceSetting())) do
@@ -430,15 +413,49 @@ function TechNews:getSourceSettingItems()
                     set[source.id] = true
                 end
                 self:setSourceSetting(set)
-                if touchmenu_instance then
-                    touchmenu_instance:updateItems()
-                end
             end,
         }
     end
     items[#items + 1] = {
         text = "勾选即生效；改动会清除今日缓存",
-        enabled = false,
+        select_enabled = false,
+    }
+    return items
+end
+
+--- 「设置」子菜单：管理收藏（仅有收藏时）、订阅源设置、包含图片、清理全部缓存
+function TechNews:getSettingItems()
+    local items = {}
+    if #favorites.load() > 0 then
+        items[#items + 1] = {
+            text = "管理收藏",
+            sub_item_table_func = function()
+                return self:getFavoriteManageItems()
+            end,
+        }
+    end
+    items[#items + 1] = {
+        text = "订阅源设置",
+        sub_item_table_func = function()
+            return self:getSourceSettingItems()
+        end,
+    }
+    items[#items + 1] = {
+        text = "包含图片",
+        keep_menu_open = true,
+        text_func = function()
+            return (self:withImages() and "✓ " or "▢ ") .. "包含图片"
+        end,
+        callback = function()
+            G_reader_settings:saveSetting("technews_with_images",
+                not self:withImages())
+            -- 切换后当天缓存作废，下次打开重新生成
+            storage:clear_date(today_str())
+        end,
+    }
+    items[#items + 1] = {
+        text = "清理全部缓存",
+        callback = function() self:confirmClearCache() end,
     }
     return items
 end
@@ -459,12 +476,12 @@ function TechNews:getFavoriteItems()
         end
     end
     if #items == 0 then
-        items[1] = { text = "暂无收藏", enabled = false }
+        items[1] = { text = "暂无收藏", select_enabled = false }
     end
     return items
 end
 
---- 「管理收藏」子菜单：逐条确认删除；删除后重建条目表以反映成员变化
+--- 「管理收藏」子菜单：逐条确认删除；删除完成后整体重建条目表以反映成员变化
 function TechNews:getFavoriteManageItems()
     local ConfirmBox = require("ui/widget/confirmbox")
     local items = {}
@@ -473,7 +490,7 @@ function TechNews:getFavoriteManageItems()
             text = string.format("%s · %s", entry.title,
                 os.date("%m-%d", entry.favorited_at or 0)),
             keep_menu_open = true,
-            callback = function(touchmenu_instance)
+            callback = function()
                 UIManager:show(ConfirmBox:new{
                     text = "删除这条收藏？\n" .. entry.title,
                     ok_text = "删除",
@@ -485,9 +502,9 @@ function TechNews:getFavoriteManageItems()
                             timeout = 2,
                         })
                         -- updateItems 只重绘旧条目表：成员已变化，须整体替换后再刷新
-                        if touchmenu_instance then
-                            touchmenu_instance.item_table = self:getFavoriteManageItems()
-                            touchmenu_instance:updateItems(1)
+                        if self._home_menu then
+                            self._home_menu:switchItemTable("管理收藏",
+                                self:getFavoriteManageItems())
                         end
                     end,
                 })
@@ -495,7 +512,7 @@ function TechNews:getFavoriteManageItems()
         }
     end
     if #items == 0 then
-        items[1] = { text = "暂无收藏", enabled = false }
+        items[1] = { text = "暂无收藏", select_enabled = false }
     end
     return items
 end
