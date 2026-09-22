@@ -130,6 +130,45 @@ function favorites.is_favorited(title)
     return favorites.find(title) ~= nil
 end
 
+--- 小标题（kind=heading）在文章内容块中的序号（1 起）；无匹配返回 nil。
+-- 二级目录（nav/NCX 嵌套条目）与「收藏整篇/本小篇」都以此序号为准。
+function favorites.section_index(item, title)
+    if not item or not title then return nil end
+    local index = 0
+    for _, block in ipairs(item.blocks or {}) do
+        if block.text and block.kind == "heading" then
+            index = index + 1
+            if block.text == title then return index end
+        end
+    end
+    return nil
+end
+
+--- 按小节序号切出子文章：标题 = 小标题文本；blocks = 该小标题之后、下一个小标题之前。
+-- 返回值可直接交给 favorites.add（link/source_name 继承整篇）。
+function favorites.section_article(item, index)
+    if not item or type(index) ~= "number" or index < 1 then return nil end
+    local heading, sub = 0, nil
+    for _, block in ipairs(item.blocks or {}) do
+        if block.text and block.kind == "heading" then
+            heading = heading + 1
+            if heading == index then
+                sub = {
+                    title = block.text,
+                    link = item.link,
+                    source_name = item.source_name,
+                    blocks = {},
+                }
+            elseif heading > index then
+                break
+            end
+        elseif sub then
+            sub.blocks[#sub.blocks + 1] = block
+        end
+    end
+    return sub
+end
+
 --- 覆盖写入索引（dump 序列化的 Lua 表，可直接 loadfile 读回）
 function favorites.save(list)
     if not ensure_dirs() then return nil, "无法创建收藏目录" end
