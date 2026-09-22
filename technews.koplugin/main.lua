@@ -693,7 +693,8 @@ function TechNews:onShowTechNewsQuickMenu()
     }
     dialog = ButtonDialog:new{
         name = "technews_quickmenu",
-        title = "科技资讯",
+        title = "快捷菜单",
+        title_align = "center",
         buttons = buttons,
     }
     UIManager:show(dialog)
@@ -703,11 +704,15 @@ end
 --- 关闭当前文档并回到插件首页（阅读器实例随后失效，改由文件管理器一侧的实例打开首页）
 function TechNews:closeDocumentAndReturn()
     if not (self.ui and self.ui.document) then return end
-    local file = self.ui.document.file
     self.ui:onClose()
-    self.ui:showFileManager(file)
+    -- 文件管理器通常还在下层：直接复用，保持它自己原来的位置（约等于 KOReader 启动时的视图）。
+    -- 不传文档路径——传了会把文件管理器/书架导航进技术资讯的数据目录。
+    local FileManager = require("apps/filemanager/filemanager")
+    if not FileManager.instance then
+        FileManager:showFiles()
+    end
     UIManager:scheduleIn(0.2, function()
-        local fm = require("apps/filemanager/filemanager").instance
+        local fm = FileManager.instance
         local fm_plugin = fm and fm.technews
         if fm_plugin then
             fm_plugin:openHome()
@@ -724,7 +729,6 @@ function TechNews:deleteCurrentDocument()
     local doc_path = self.ui and self.ui.document and self.ui.document.file
     if not doc_path then return end
     local FileManager = require("apps/filemanager/filemanager")
-    local util = require("util")
     local function pre_delete_callback()
         local entry = self:favoriteEntryForDocument(doc_path)
         if entry then
@@ -738,8 +742,11 @@ function TechNews:deleteCurrentDocument()
         self.ui:onClose()
     end
     local function post_delete_callback()
-        -- 必须与阅读器关闭处于同一事件内：若延迟，窗口栈会短暂无应用而直接退出
-        FileManager:showFiles(util.splitFilePathName(doc_path))
+        -- 必须与阅读器关闭处于同一事件内：若延迟，窗口栈会短暂无应用而直接退出。
+        -- 文件管理器还在下层就复用（不导航到数据目录）；不在才补一个（它自己的默认位置）。
+        if not FileManager.instance then
+            FileManager:showFiles()
+        end
         local fm = FileManager.instance
         local fm_plugin = fm and fm.technews
         if fm_plugin then
@@ -761,10 +768,11 @@ local QUICK_ZONE_OVERRIDES = {
 
 --- 阅读界面右上角的快捷菜单按钮（三个点）；仅本插件文档显示。
 -- 参考 bookshelf 插件做法：显示挂到阅读视图模块（随页面绘制，不是浮层、不碰事件派发）；
--- 点击注册为阅读器触摸区（overrides 盖过同位置的翻页/高亮/菜单/书签角等区域）。
+-- 点击另注册为阅读器触摸区（overrides 盖过同位置的翻页/高亮/菜单/书签角等区域）。
+-- 视图模块必须在首帧绘制前注册（ReaderReady 同步调用）：注册晚了按钮要等下一次
+-- 重绘（翻页）才出现；且 setDirty 只认窗口栈上的部件——view 不在栈上，催不动重绘。
 function TechNews:showQuickMenuButton()
     if self._quick_button or not self:isTechNewsDocument() then return end
-    if require("apps/reader/readerui").instance ~= self.ui then return end
     if not (self.ui.view and self.ui.view.registerViewModule) then return end
     local Screen = Device.screen
     local sw, sh = Screen:getWidth(), Screen:getHeight()
@@ -788,6 +796,7 @@ function TechNews:showQuickMenuButton()
         end,
     }
     self.ui.view:registerViewModule("technews_quickmenu_dots", self._quick_button)
+    -- 触摸区只预建对象，稍后再注册（见 registerQuickMenuTouchZone）
     self._quick_zone = {
         id = "technews_quickmenu_tap",
         ges = "tap",
@@ -801,8 +810,15 @@ function TechNews:showQuickMenuButton()
             return true
         end,
     }
+end
+
+--- 注册快捷按钮点击区；ReaderReady 后晚一拍调用。
+-- 晚一拍是为了让注册顺序排在 ReaderUI 自身触摸区之后，overrides 才能盖过
+-- 翻页/高亮/菜单/书签角等区域。
+function TechNews:registerQuickMenuTouchZone()
+    if self._quick_zone_registered or not self._quick_zone then return end
     self.ui:registerTouchZones({ self._quick_zone })
-    UIManager:setDirty(self.ui.view, "ui")
+    self._quick_zone_registered = true
 end
 
 function TechNews:hideQuickMenuButton()
@@ -812,16 +828,21 @@ function TechNews:hideQuickMenuButton()
         end
         self._quick_button = nil
     end
-    if self._quick_zone and self.ui and self.ui.unRegisterTouchZones then
+    if self._quick_zone and self._quick_zone_registered
+        and self.ui and self.ui.unRegisterTouchZones then
         self.ui:unRegisterTouchZones({ self._quick_zone })
-        self._quick_zone = nil
     end
+    self._quick_zone = nil
+    self._quick_zone_registered = nil
 end
 
 function TechNews:onReaderReady()
-    -- ReaderReady 派发于 ReaderUI 入栈之前：延迟到阅读界面真正显示，按钮才会浮在其上方
+    -- 显示：同步注册视图模块，赶在首帧绘制前（ReaderReady 早于 ReaderUI 入栈与首绘）
+    self:showQuickMenuButton()
+    -- 点击：晚一拍注册触摸区（顺序排在 ReaderUI 自身各区之后）；随后兜底催一次重绘
     UIManager:scheduleIn(0.3, function()
-        self:showQuickMenuButton()
+        self:registerQuickMenuTouchZone()
+        if self._quick_button then UIManager:setDirty(self.ui, "ui") end
     end)
 end
 
