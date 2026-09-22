@@ -322,42 +322,6 @@ function TechNews:addToMainMenu(menu_items)
             self:openHome()
         end,
     }
-    -- 阅读器菜单条目只在阅读「本插件生成」的文档时注册（见 isTechNewsDocument；
-    -- 其它书籍不受打扰）。已核实：ReaderMenu 的 tab_item_table 一旦构建即缓存，
-    -- addToMainMenu 每次阅读会话只被调用一次，故收藏文案需用 text_func 每次求值。
-    if self:isTechNewsDocument() then
-        menu_items.technews_favorite = {
-            text_func = function()
-                local ctx = self:currentFavoriteContext()
-                if ctx and ctx.sub_favorited then
-                    return "取消收藏当前小篇"
-                end
-                if ctx and ctx.whole_favorited then
-                    return "取消收藏当前文章"
-                end
-                return "收藏当前文章"
-            end,
-            sorting_hint = "tools",
-            callback = function()
-                local ctx = self:currentFavoriteContext()
-                if not ctx then
-                    UIManager:show(InfoMessage:new{
-                        text = "当前文章不支持收藏\n（未找到该期资讯的元数据）",
-                        timeout = 3,
-                    })
-                    return
-                end
-                self:toggleFavorite(ctx.article, ctx.issue_path, ctx.section_index)
-            end,
-        }
-        menu_items.technews_close = {
-            text = "关闭并返回",
-            sorting_hint = "tools",
-            callback = function()
-                self:closeDocumentAndReturn()
-            end,
-        }
-    end
 end
 
 --- 打开「科技资讯」全屏首页（用 Menu 部件铺满全屏；条目见 getHomeItems）
@@ -1160,18 +1124,6 @@ function TechNews:favoriteContext(article, section_index)
         whole_favorited = favorites.is_favorited(article.title) and true or false,
         sub_favorited = sub ~= nil and favorites.is_favorited(sub.title) and true or false,
     }
-end
-
---- 当前收藏上下文：解析文章/小节与两级收藏状态（菜单文案与动作共用入口）。
--- 返回 { article, issue_path, section_index, sub, whole_favorited, sub_favorited }；无文章时 nil。
-function TechNews:currentFavoriteContext()
-    local article, issue_path, section_index = self:currentActionableArticle()
-    if not article then return nil end
-    local ctx = self:favoriteContext(article, section_index) or {}
-    ctx.article = article
-    ctx.issue_path = issue_path
-    ctx.section_index = section_index
-    return ctx
 end
 
 --- 取消收藏（按标题精确匹配）；整篇与小篇两条路径共用。
