@@ -84,7 +84,9 @@ local function run_ok(cmd)
 end
 
 ----------------------------------------------------------------------
--- 样本一：两源混排（含无 source_name 条目），目录应分两级
+-- 样本一：两源混排（含无 source_name 条目）：目录按正文顺序平铺
+-- （合并期不再按来源分组：分组序与正文序不一致 → 页码非单调 → KOReader 的
+--  validateAndFixToc 会把它当坏目录修复、目录跳转全错，见 2026-09-22 实测）
 -- 条目顺序 → href：1 甲一(IT之家) · 2 乙一(CNBeta) · 3 甲二(IT之家)
 --                  4 乙二(CNBeta) · 5 丙一(无来源)
 ----------------------------------------------------------------------
@@ -107,62 +109,38 @@ do
     ok(#merged_epub > 0, "两源样本：构建出的 EPUB 非空")
     eq(merged_epub:sub(-22, -19), "PK\005\006", "两源样本：EPUB 以 ZIP EOCD 签名结尾")
 
-    -- nav.xhtml：封面顶层 + 按来源两级
+    -- nav.xhtml：平铺（按正文顺序），封面在首位；合并期不再按来源分组
     contains(merged_epub, '<li><a href="text/cover.xhtml">本期目录</a></li>',
         "nav 顶层保留封面「本期目录」")
-    contains(merged_epub, "<li><span>IT之家</span><ol>", "nav 出现 IT之家 分组标签与内嵌 <ol>")
-    contains(merged_epub, "<li><span>CNBeta</span><ol>", "nav 出现 CNBeta 分组标签与内嵌 <ol>")
-    contains(merged_epub, "<li><span>其他</span><ol>", "nav 无来源条目归入「其他」分组")
+    ok(pos(merged_epub, "<span>") == nil, "nav 全平铺（不再有分组标签 span）")
 
-    local p_it = pos(merged_epub, "<span>IT之家</span>")
-    local p_cn = pos(merged_epub, "<span>CNBeta</span>")
-    local p_ot = pos(merged_epub, "<span>其他</span>")
-    ok(p_it and p_cn and p_ot and p_it < p_cn and p_cn < p_ot,
-        "nav 分组顺序为来源首次出现顺序：IT之家 → CNBeta → 其他")
-
-    if p_it and p_cn and p_ot then
-        local group_it = merged_epub:sub(p_it, p_cn - 1)
-        local group_cn = merged_epub:sub(p_cn, p_ot - 1)
-        local group_ot = merged_epub:sub(p_ot, #merged_epub)
-        contains(group_it, "text/article-001.xhtml", "IT之家组包含第 1 条（甲一）")
-        contains(group_it, "text/article-003.xhtml", "IT之家组包含第 3 条（甲二）")
-        ok(pos(group_it, "text/article-001.xhtml") < pos(group_it, "text/article-003.xhtml"),
-            "IT之家组内保持条目原相对顺序（甲一在甲二前）")
-        ok(pos(group_it, "text/article-002.xhtml") == nil,
-            "IT之家组不含 CNBeta 条目")
-        contains(group_cn, "text/article-002.xhtml", "CNBeta 组包含第 2 条（乙一）")
-        contains(group_cn, "text/article-004.xhtml", "CNBeta 组包含第 4 条（乙二）")
-        contains(group_ot, "text/article-005.xhtml", "其他组包含第 5 条（丙一）")
+    local order = {}
+    for i = 1, 5 do
+        order[i] = pos(merged_epub, string.format('text/article-%03d.xhtml"', i))
     end
+    ok(order[1] and order[5] and order[1] < order[2] and order[2] < order[3]
+        and order[3] < order[4] and order[4] < order[5],
+        "nav 条目按正文顺序平铺（article-001 → article-005）")
 
-    -- toc.ncx：封面 navPoint + 每组父 navPoint（content 指向组内首条）+ 子 navPoint 嵌套
+    -- toc.ncx：平铺 navPoint（封面 + 5 条，顺序 id/playOrder），无分组嵌套；depth = 1
     local expected_map = table.concat({
         '<navPoint id="nav-1" playOrder="1"><navLabel><text>本期目录</text></navLabel>'
             .. '<content src="text/cover.xhtml"/></navPoint>',
-        '<navPoint id="nav-2" playOrder="2"><navLabel><text>IT之家</text></navLabel>'
-            .. '<content src="text/article-001.xhtml"/>',
-        '<navPoint id="nav-3" playOrder="3"><navLabel><text>甲一</text></navLabel>'
+        '<navPoint id="nav-2" playOrder="2"><navLabel><text>甲一</text></navLabel>'
             .. '<content src="text/article-001.xhtml"/></navPoint>',
+        '<navPoint id="nav-3" playOrder="3"><navLabel><text>乙一</text></navLabel>'
+            .. '<content src="text/article-002.xhtml"/></navPoint>',
         '<navPoint id="nav-4" playOrder="4"><navLabel><text>甲二</text></navLabel>'
             .. '<content src="text/article-003.xhtml"/></navPoint>',
-        "</navPoint>",
-        '<navPoint id="nav-5" playOrder="5"><navLabel><text>CNBeta</text></navLabel>'
-            .. '<content src="text/article-002.xhtml"/>',
-        '<navPoint id="nav-6" playOrder="6"><navLabel><text>乙一</text></navLabel>'
-            .. '<content src="text/article-002.xhtml"/></navPoint>',
-        '<navPoint id="nav-7" playOrder="7"><navLabel><text>乙二</text></navLabel>'
+        '<navPoint id="nav-5" playOrder="5"><navLabel><text>乙二</text></navLabel>'
             .. '<content src="text/article-004.xhtml"/></navPoint>',
-        "</navPoint>",
-        '<navPoint id="nav-8" playOrder="8"><navLabel><text>其他</text></navLabel>'
-            .. '<content src="text/article-005.xhtml"/>',
-        '<navPoint id="nav-9" playOrder="9"><navLabel><text>丙一</text></navLabel>'
+        '<navPoint id="nav-6" playOrder="6"><navLabel><text>丙一</text></navLabel>'
             .. '<content src="text/article-005.xhtml"/></navPoint>',
-        "</navPoint>",
     }, "\n")
     eq(block_of(merged_epub, "<navMap>", "</navMap>"),
         "<navMap>" .. expected_map .. "</navMap>",
-        "ncx 分组结构（父子嵌套 + 顺序 id/playOrder）与预期一致")
-    contains(merged_epub, '<meta name="dtb:depth" content="2"/>', "ncx depth 元数据为 2")
+        "ncx 平铺结构（顺序 id/playOrder）与预期一致")
+    contains(merged_epub, '<meta name="dtb:depth" content="1"/>', "ncx depth 元数据为 1")
 end
 
 ----------------------------------------------------------------------
@@ -308,7 +286,7 @@ end
 ----------------------------------------------------------------------
 -- 样本六：文内小标题 → 二级目录（正文锚点 + nav/ncx 嵌套；单条不建子目录）
 -- 条目 1（2 个小标题）应产生嵌套子目录；条目 2（1 个）保持平铺、无锚点。
--- 两个来源 → 走分组目录；ncx 深度应为 3（组 → 文章 → 小标题）
+-- 目录一律平铺（不再按来源分组）；ncx 深度应为 2（文章 → 小标题）
 ----------------------------------------------------------------------
 
 local digest = {
@@ -344,8 +322,8 @@ do
         "ncx：子 navPoint 指向 h1 锚点")
     contains(digest_epub, '<content src="text/article-001.xhtml#h2"/>',
         "ncx：子 navPoint 指向 h2 锚点")
-    contains(digest_epub, '<meta name="dtb:depth" content="3"/>',
-        "ncx：深度随子目录加一级（组→文章→小标题）")
+    contains(digest_epub, '<meta name="dtb:depth" content="2"/>',
+        "ncx：深度随子目录加一级（文章→小标题）")
     contains(digest_epub, '<li><a href="text/article-002.xhtml">单标题文章</a></li>',
         "单条小标题不建子目录（条目平铺）")
     contains(digest_epub, "<h3>唯一小标题</h3>", "单条小标题正文无锚点（与从前一致）")

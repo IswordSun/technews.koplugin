@@ -149,29 +149,10 @@ local function xhtml(title, body)
 </body></html>]]
 end
 
--- 目录分组：跳过封面（首条），按来源首次出现排序，组内保持原相对顺序；
--- 非 nil 来源不足两个时返回 nil（单源/合并失败场景保持平铺）
-local function toc_groups(toc)
-    local groups, by_label = {}, {}
-    local sources, distinct = {}, 0
-    for index = 2, #toc do
-        local entry = toc[index]
-        if entry.source ~= nil and not sources[entry.source] then
-            sources[entry.source] = true
-            distinct = distinct + 1
-        end
-        local label = entry.source or "其他"
-        local group = by_label[label]
-        if not group then
-            group = { label = label, entries = {} }
-            by_label[label] = group
-            groups[#groups + 1] = group
-        end
-        group.entries[#group.entries + 1] = entry
-    end
-    if distinct < 2 then return nil end
-    return groups
-end
+-- 目录顺序 = 正文顺序（items 数组序）。此前合并期曾按来源分组，但分组顺序与
+-- 正文顺序不一致（同源条目在时间轴上不连续）→ 页码非单调 → KOReader 的
+-- validateAndFixToc 会把它当作坏目录"修复"，把正确页码改坏、目录跳转全错
+-- （2026-09-22 实测：「(原页) 86」，子条目全跳到文章开头）。故一律平铺。
 
 -- 目录项 → nav 的 <li>；带 subs（文内小标题）时内嵌一层锚点 <ol>
 local function nav_li(entry)
@@ -190,21 +171,8 @@ end
 
 local function build_nav(toc)
     local items = { "<ol>" }
-    local groups = toc_groups(toc)
-    if groups then
-        -- 封面保持在顶层首位，其后每个来源一个 <li><span>标签</span><ol>…</ol></li>
-        items[#items + 1] = nav_li(toc[1])
-        for _, group in ipairs(groups) do
-            items[#items + 1] = "<li><span>" .. escape(group.label) .. "</span><ol>"
-            for _, entry in ipairs(group.entries) do
-                items[#items + 1] = nav_li(entry)
-            end
-            items[#items + 1] = "</ol></li>"
-        end
-    else
-        for _, entry in ipairs(toc) do
-            items[#items + 1] = nav_li(entry)
-        end
+    for _, entry in ipairs(toc) do
+        items[#items + 1] = nav_li(entry)
     end
     items[#items + 1] = "</ol>"
     return [[<?xml version="1.0" encoding="utf-8"?>
@@ -236,32 +204,13 @@ local function build_ncx(toc, identifier, title)
         return point_head(entry.title, entry.href)
             .. "\n" .. table.concat(children, "\n") .. "\n</navPoint>"
     end
-    local groups = toc_groups(toc)
     local depth = 1
-    if groups then
-        depth = 2
-        points[#points + 1] = entry_point(toc[1])
-        for _, group in ipairs(groups) do
-            -- NCX 的 content 必填：父节点指向组内首条
-            local parent = point_head(group.label, group.entries[1].href)
-            local children = {}
-            for _, entry in ipairs(group.entries) do
-                children[#children + 1] = entry_point(entry)
-            end
-            points[#points + 1] = parent .. "\n" .. table.concat(children, "\n") .. "\n</navPoint>"
-        end
-    else
-        for _, entry in ipairs(toc) do
-            points[#points + 1] = entry_point(entry)
-        end
-    end
     for _, entry in ipairs(toc) do
+        points[#points + 1] = entry_point(entry)
         if entry.subs then
-            depth = depth + 1
-            break
+            depth = 2
         end
-    end
-    return [[<?xml version="1.0" encoding="utf-8"?>
+    end    return [[<?xml version="1.0" encoding="utf-8"?>
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><head>
 <meta name="dtb:uid" content="]] .. escape(identifier) .. [["/><meta name="dtb:depth" content="]] .. depth .. [["/>
 </head><docTitle><text>]] .. escape(title) .. "</text></docTitle><navMap>"
@@ -390,7 +339,7 @@ function Epub.build(data, output_path)
             body_parts[#body_parts + 1] = '<p class="link">原文：' .. escape(item.link) .. "</p>"
         end
         toc[#toc + 1] = {
-            title = item_title, href = href, source = item.source_name,
+            title = item_title, href = href,
             subs = with_subs and subs or nil,
         }
         chapters[#chapters + 1] = {
