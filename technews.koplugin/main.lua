@@ -1486,30 +1486,101 @@ function TechNews:checkForUpdates()
     end)
 end
 
---- 下载并安装更新（Trapper 协程内进行；下载期间不做逐块进度——
--- http.download 的回调在 socket 回调（C 调用栈）里，不能 yield）
+--- 下载并安装更新：整个任务在子进程中执行，进度经进度文件回传。
+-- 说明：http.download 的进度回调运行在 socket 回调（C 调用栈）中，不能 yield
+-- （Trapper:info 会崩）；子进程里只做纯文件写入，UI 线程按 0.5s 轮询刷新进度条。
+-- 进度条可点击取消（Trapper 的 dismiss 信号）。
 function TechNews:installUpdate(release)
+    local ProgressbarDialog = require("ui/widget/progressbardialog")
+    local progress_path = storage.dir .. "update-progress"
     local zip_path = storage.dir .. "technews-update.zip"
-    Trapper:wrap(function()
-        Trapper:info("正在下载 v" .. release.version .. "…（完成后自动安装）")
-        local ok, err = updater.download(release.zip_url, zip_path)
-        if not ok then
-            Trapper:clear()
-            UIManager:show(InfoMessage:new{
-                text = "下载失败：" .. tostring(err),
-                timeout = 4,
-            })
-            return
+
+    local function write_progress(stage, percent, current, total)
+        local file = io.open(progress_path .. ".tmp", "wb")
+        if not file then return end
+        file:write(table.concat({
+            tostring(stage), tostring(math.floor(percent or 0)),
+            tostring(math.floor(current or 0)), tostring(math.floor(total or 0)),
+        }, "\t"))
+        file:close()
+        os.rename(progress_path .. ".tmp", progress_path)
+    end
+
+    local function read_progress()
+        local file = io.open(progress_path, "rb")
+        if not file then return nil end
+        local content = file:read("*a")
+        file:close()
+        local stage, percent = content:match("^([^\t]*)\t(%d+)\t%d+\t%d+$")
+        if not stage then return nil end
+        return stage, tonumber(percent)
+    end
+
+    local function remove_progress()
+        os.remove(progress_path)
+        os.remove(progress_path .. ".tmp")
+    end
+
+    remove_progress()
+    local dialog = ProgressbarDialog:new{
+        title = "正在更新 v" .. release.version .. "…",
+        progress_max = 100,
+        refresh_time_seconds = 0.5,
+    }
+    dialog:show()
+
+    local active = true
+    local function poll()
+        if not active then return end
+        local stage, percent = read_progress()
+        if stage == "downloading" then
+            dialog:reportProgress(percent)
+        elseif stage == "install" or stage == "complete" then
+            dialog:reportProgress(100)
         end
-        Trapper:info("正在安装 v" .. release.version .. "…")
-        local installed, install_err = updater.install(zip_path, release.version)
-        os.remove(zip_path) -- 安装成功与否都清掉下载文件（失败时也避免占空间）
-        Trapper:clear()
-        if not installed then
-            UIManager:show(InfoMessage:new{
-                text = "安装失败：" .. tostring(install_err),
-                timeout = 5,
-            })
+        UIManager:scheduleIn(0.5, poll)
+    end
+
+    Trapper:wrap(function()
+        poll()
+        local zip_size = tonumber(release.zip_size) or 0
+        local completed, result = Trapper:dismissableRunInSubprocess(function()
+            -- 子进程：下载 + 安装；进度只写文件，不触碰 UI（可安全用于 socket 回调）
+            write_progress("downloading", 0, 0, zip_size)
+            local ok, err = updater.download(release.zip_url, zip_path, function(received)
+                write_progress("downloading",
+                    zip_size > 0 and math.floor(received * 100 / zip_size) or 0,
+                    received, zip_size)
+                return true
+            end)
+            if not ok then
+                return { success = false, phase = "download", error = err }
+            end
+            write_progress("install", 100, 0, zip_size)
+            local installed, install_err = updater.install(zip_path, release.version)
+            os.remove(zip_path) -- 成败都清理下载文件
+            if not installed then
+                return { success = false, phase = "install", error = install_err }
+            end
+            write_progress("complete", 100, 0, zip_size)
+            return { success = true }
+        end, dialog)
+
+        active = false
+        UIManager:unschedule(poll)
+        remove_progress()
+        dialog.dismiss_callback = nil -- 收尾关闭时不再触发取消信号
+        dialog:close()
+
+        if not result or not result.success then
+            local msg
+            if not completed then
+                msg = "已取消更新"
+            else
+                local prefix = result.phase == "download" and "下载失败：" or "安装失败："
+                msg = prefix .. tostring(result.error or "未知错误")
+            end
+            UIManager:show(InfoMessage:new{ text = msg, timeout = 5 })
             return
         end
         self._pending_release = nil
