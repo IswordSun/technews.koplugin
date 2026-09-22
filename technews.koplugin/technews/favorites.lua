@@ -298,6 +298,8 @@ function favorites.add(article, issue_path, progress_cb)
         date = os.date("%Y-%m-%d", now),
         items = { article },
         images = images,
+        no_cover = true,    -- 收藏快照：无封面页
+        no_overview = true, -- 无目录页（打开即正文）
     }, path)
     if not ok then
         os.remove(path .. ".part")
@@ -328,10 +330,11 @@ local function same_entry(a, b)
     return a.title == b.title and a.favorited_at == b.favorited_at
 end
 
---- 移除一条收藏：尽力删除快照文件（不存在/删除失败无妨），再从索引剔除并保存
-function favorites.remove(entry)
+--- 移除一条收藏：默认尽力删除快照文件（不存在/删除失败无妨），再从索引剔除并保存。
+-- keep_file 为真时只剔除索引条目、保留快照文件。
+function favorites.remove(entry, keep_file)
     if not entry then return nil, "缺少条目" end
-    if entry.file then os.remove(entry.file) end
+    if entry.file and not keep_file then os.remove(entry.file) end
     local kept = {}
     for _, e in ipairs(favorites.load()) do
         if not same_entry(e, entry) then kept[#kept + 1] = e end

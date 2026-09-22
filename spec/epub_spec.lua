@@ -273,6 +273,39 @@ do
 end
 
 ----------------------------------------------------------------------
+-- 样本五：收藏快照模式（no_cover + no_overview）——无封面页、无目录页，打开即正文
+----------------------------------------------------------------------
+
+local snapshot = {
+    title = "某篇收藏文章",
+    date = "2026-09-22",
+    no_cover = true,
+    no_overview = true,
+    items = {
+        { title = "某篇收藏文章", source_name = "Solidot", blocks = {
+            { text = "收藏正文" },
+            { img = "https://example.com/a.jpg" },
+        } },
+    },
+    images = { ["https://example.com/a.jpg"] = { data = "JPEGDATA", ext = "jpg" } },
+}
+
+local snapshot_epub = build_and_read(snapshot)
+
+do
+    ok(pos(snapshot_epub, "cover.xhtml") == nil, "快照模式：无封面/目录页（cover.xhtml）")
+    ok(pos(snapshot_epub, "coverpage.xhtml") == nil, "快照模式：无独立封面页")
+    ok(pos(snapshot_epub, "cover.jpg") == nil, "快照模式：无封面图片文件")
+    ok(pos(snapshot_epub, "cover-image") == nil, "快照模式：无 cover-image 清单项与 meta")
+    contains(snapshot_epub, '<itemref idref="ch1"/>', "快照模式：spine 首项即正文（ch1）")
+    contains(snapshot_epub, "收藏正文", "快照模式：正文内容仍在")
+    contains(snapshot_epub, "OEBPS/images/img-001.jpg", "快照模式：正文图片照常注入")
+    contains(snapshot_epub, '<li><a href="text/article-001.xhtml">某篇收藏文章</a></li>',
+        "快照模式：nav 仅列文章本身")
+    ok(pos(snapshot_epub, "本期目录") == nil, "快照模式：无「本期目录」条目")
+end
+
+----------------------------------------------------------------------
 -- 可选：用 unzip -t 校验 ZIP 完整性（环境中无 unzip 时跳过）
 ----------------------------------------------------------------------
 

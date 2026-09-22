@@ -8,8 +8,8 @@
 --
 -- 自测钩子：环境变量 TECHNEWS_SELFTEST=1 时，启动 3 秒后自动打开「合并·今日」
 
--- 首次引导一次性守卫：插件经 dofile 重载会重置模块级变量，必须用全局记录
--- luacheck: globals G_technews_sources_prompted
+-- 一次性守卫：插件经 dofile 重载会重置模块级变量，必须用全局记录
+-- luacheck: globals G_technews_sources_prompted G_technews_end_patch G_technews_toc_patch
 
 local Blitbuffer = require("ffi/blitbuffer")
 local ButtonTable = require("ui/widget/buttontable")
@@ -226,6 +226,60 @@ function TechNews:init()
     self.ui.menu:registerToMainMenu(self)
     logger.info("technews initialized")
 
+    -- 文档结束弹窗：本插件文档统一改用快捷菜单（其它文档保持 KOReader 原行为）。
+    -- 插件经 dofile 重载，用全局标记保证补丁只安装一次。
+    if not G_technews_end_patch then
+        G_technews_end_patch = true
+        local ConfirmBox = require("ui/widget/confirmbox")
+        local ReaderStatus = require("apps/reader/modules/readerstatus")
+        local orig_onEndOfBook = ReaderStatus.onEndOfBook
+        ReaderStatus.onEndOfBook = function(rs, ...)
+            local plugin = rs.ui and rs.ui.technews
+            if plugin and plugin:isTechNewsDocument() then
+                if G_reader_settings:isTrue("end_document_auto_mark") then
+                    rs:markBook(true)
+                end
+                local top_widget = UIManager:getTopmostVisibleWidget() or {}
+                if top_widget.name ~= "technews_end_prompt" then
+                    UIManager:show(ConfirmBox:new{
+                        name = "technews_end_prompt",
+                        text = "已经是最后一页了\n是否需要返回？",
+                        ok_text = "返回",
+                        cancel_text = "忽略",
+                        ok_callback = function()
+                            plugin:closeDocumentAndReturn()
+                        end,
+                    })
+                end
+                return true
+            end
+            return orig_onEndOfBook(rs, ...)
+        end
+    end
+
+    -- 目录菜单去掉键盘快捷键字母列（与首页一致；模拟器有键盘才会显示）。
+    -- 构建期间临时改类默认（首次 updateItems 发生在构建内），构建后钉在实例上。
+    if not G_technews_toc_patch then
+        G_technews_toc_patch = true
+        local ReaderToc = require("apps/reader/modules/readertoc")
+        local Menu = require("ui/widget/menu")
+        local orig_onShowToc = ReaderToc.onShowToc
+        ReaderToc.onShowToc = function(toc, ...)
+            local plugin = toc.ui and toc.ui.technews
+            if not (plugin and plugin:isTechNewsDocument()) then
+                return orig_onShowToc(toc, ...)
+            end
+            local saved = Menu.is_enable_shortcut
+            Menu.is_enable_shortcut = false
+            local ret = orig_onShowToc(toc, ...)
+            Menu.is_enable_shortcut = saved
+            if toc.toc_menu then
+                toc.toc_menu.is_enable_shortcut = false
+            end
+            return ret
+        end
+    end
+
     if os.getenv("TECHNEWS_SELFTEST") == "1" and not G_technews_selftest_done then
         G_technews_selftest_done = true
         UIManager:scheduleIn(3.0, function()
@@ -250,6 +304,12 @@ function TechNews:setSourceSetting(set)
     storage:clear_date(today_str())
 end
 
+--- 当前文档是否由本插件生成（路径判定：数据目录下的 technews/，覆盖缓存期与收藏快照）
+function TechNews:isTechNewsDocument()
+    local doc_file = self.ui and self.ui.document and self.ui.document.file
+    return doc_file ~= nil and doc_file:find("/technews/", 1, true) ~= nil
+end
+
 function TechNews:addToMainMenu(menu_items)
     menu_items.technews = {
         text = "科技资讯订阅",
@@ -259,13 +319,13 @@ function TechNews:addToMainMenu(menu_items)
             self:openHome()
         end,
     }
-    -- 阅读器菜单条目只在阅读文档时注册（文件管理器无 self.ui.document）。
-    -- 已核实：ReaderMenu 的 tab_item_table 一旦构建即缓存，addToMainMenu 每次阅读会话
-    -- 只被调用一次，故文案不能按注册时状态固定，需用 text_func 在每次菜单展开时求值。
-    if self.ui.document then
+    -- 阅读器菜单条目只在阅读「本插件生成」的文档时注册（见 isTechNewsDocument；
+    -- 其它书籍不受打扰）。已核实：ReaderMenu 的 tab_item_table 一旦构建即缓存，
+    -- addToMainMenu 每次阅读会话只被调用一次，故收藏文案需用 text_func 每次求值。
+    if self:isTechNewsDocument() then
         menu_items.technews_favorite = {
             text_func = function()
-                local article = self:currentIssueArticle()
+                local article = self:currentActionableArticle()
                 if article and favorites.is_favorited(article.title) then
                     return "取消收藏当前文章"
                 end
@@ -273,7 +333,7 @@ function TechNews:addToMainMenu(menu_items)
             end,
             sorting_hint = "tools",
             callback = function()
-                local article, issue_path = self:currentIssueArticle()
+                local article, issue_path = self:currentActionableArticle()
                 if not article then
                     UIManager:show(InfoMessage:new{
                         text = "当前文章不支持收藏\n（未找到该期资讯的元数据）",
@@ -282,6 +342,13 @@ function TechNews:addToMainMenu(menu_items)
                     return
                 end
                 self:toggleFavorite(article, issue_path)
+            end,
+        }
+        menu_items.technews_close = {
+            text = "关闭并返回",
+            sorting_hint = "tools",
+            callback = function()
+                self:closeDocumentAndReturn()
             end,
         }
     end
@@ -296,6 +363,9 @@ function TechNews:openHome()
             self:promptSourceSelection()
         end)
     end
+
+    -- 首页已打开时不叠加：旧菜单的 close_callback 会把新引用置 nil
+    if self._home_menu then return end
 
     -- 全屏页用 Menu 部件（文件列表/目录同款；TouchMenu 是系统菜单那种「顶部部分高度面板」）
     local Menu = require("ui/widget/menu")
@@ -547,10 +617,216 @@ function TechNews:onDispatcherRegisterActions()
         title = "科技资讯订阅",
         general = true,
     })
+    Dispatcher:registerAction("technews_quickmenu", {
+        category = "none",
+        event = "ShowTechNewsQuickMenu",
+        title = "科技资讯快捷菜单",
+        general = true,
+    })
 end
 
 function TechNews:onShowTechNews()
     self:openMergedIssue()
+end
+
+--- 快捷菜单（Dispatcher 动作 technews_quickmenu；可绑定到双击等手势）
+function TechNews:onShowTechNewsQuickMenu()
+    local ButtonDialog = require("ui/widget/buttondialog")
+    if not (self.ui and self.ui.document) then
+        UIManager:show(InfoMessage:new{
+            text = "在阅读科技资讯时可用快捷菜单",
+            timeout = 2,
+        })
+        return true
+    end
+    -- Dispatcher 手势可在任意文档触发：非本插件文档必须拦下，避免「删除并返回」误删用户书籍
+    if not self:isTechNewsDocument() then
+        UIManager:show(InfoMessage:new{
+            text = "该功能仅用于科技资讯内容",
+            timeout = 2,
+        })
+        return true
+    end
+    -- 已经弹出时不叠加（⋯ 按钮在菜单显示期间仍可被点到）
+    local top_widget = UIManager:getTopmostVisibleWidget() or {}
+    if top_widget.name == "technews_quickmenu" then
+        return true
+    end
+    local article, issue_path = self:currentActionableArticle()
+    local dialog
+    local buttons = {}
+    local first_row = { {
+        text = "目录",
+        callback = function()
+            UIManager:close(dialog)
+            if self.ui.toc and self.ui.toc.onShowToc then
+                self.ui.toc:onShowToc()
+            end
+        end,
+    } }
+    if article then
+        local favorited = favorites.is_favorited(article.title)
+        first_row[#first_row + 1] = {
+            text = favorited and "取消收藏" or "收藏文章",
+            callback = function()
+                UIManager:close(dialog)
+                self:toggleFavorite(article, issue_path)
+            end,
+        }
+    end
+    buttons[#buttons + 1] = first_row
+    buttons[#buttons + 1] = {
+        {
+            text = "删除并返回",
+            callback = function()
+                UIManager:close(dialog)
+                self:deleteCurrentDocument()
+            end,
+        },
+        {
+            text = "关闭并返回",
+            callback = function()
+                UIManager:close(dialog)
+                self:closeDocumentAndReturn()
+            end,
+        },
+    }
+    dialog = ButtonDialog:new{
+        name = "technews_quickmenu",
+        title = "科技资讯",
+        buttons = buttons,
+    }
+    UIManager:show(dialog)
+    return true
+end
+
+--- 关闭当前文档并回到插件首页（阅读器实例随后失效，改由文件管理器一侧的实例打开首页）
+function TechNews:closeDocumentAndReturn()
+    if not (self.ui and self.ui.document) then return end
+    local file = self.ui.document.file
+    self.ui:onClose()
+    self.ui:showFileManager(file)
+    UIManager:scheduleIn(0.2, function()
+        local fm = require("apps/filemanager/filemanager").instance
+        local fm_plugin = fm and fm.technews
+        if fm_plugin then
+            fm_plugin:openHome()
+        else
+            self:openHome()
+        end
+    end)
+end
+
+--- 删除当前文档：收藏快照同时移除收藏条目；完成后回到插件首页
+function TechNews:deleteCurrentDocument()
+    -- 防御：只删本插件生成的文档；Dispatcher 手势可能从其它书籍触发，绝不动用户自己的书
+    if not self:isTechNewsDocument() then return end
+    local doc_path = self.ui and self.ui.document and self.ui.document.file
+    if not doc_path then return end
+    local FileManager = require("apps/filemanager/filemanager")
+    local util = require("util")
+    local function pre_delete_callback()
+        local entry = self:favoriteEntryForDocument(doc_path)
+        if entry then
+            -- 收藏：keep_file=true 只移除索引条目，快照文件留给 FileManager 删除。
+            -- 若在此处先删文件，随后的 deleteFile 会因文件已不存在而失败，
+            -- 使 post_delete_callback 被跳过，无法回到插件首页。
+            favorites.remove(entry, true)
+        else
+            os.remove(doc_path .. ".items.lua") -- 缓存期：清理条目 sidecar
+        end
+        self.ui:onClose()
+    end
+    local function post_delete_callback()
+        -- 必须与阅读器关闭处于同一事件内：若延迟，窗口栈会短暂无应用而直接退出
+        FileManager:showFiles(util.splitFilePathName(doc_path))
+        local fm = FileManager.instance
+        local fm_plugin = fm and fm.technews
+        if fm_plugin then
+            fm_plugin:openHome()
+        else
+            self:openHome()
+        end
+    end
+    FileManager:showDeleteFileDialog(doc_path, post_delete_callback, pre_delete_callback)
+end
+
+-- 快捷按钮触摸区的覆盖列表：与 bookshelf 插件同款 + 右上角书签角
+local QUICK_ZONE_OVERRIDES = {
+    "tap_forward", "tap_backward",
+    "readerhighlight_tap", "readerhighlight_tap_select_mode",
+    "readerfooter_tap", "readermenu_tap", "readermenu_ext_tap",
+    "tap_top_right_corner",
+}
+
+--- 阅读界面右上角的快捷菜单按钮（三个点）；仅本插件文档显示。
+-- 参考 bookshelf 插件做法：显示挂到阅读视图模块（随页面绘制，不是浮层、不碰事件派发）；
+-- 点击注册为阅读器触摸区（overrides 盖过同位置的翻页/高亮/菜单/书签角等区域）。
+function TechNews:showQuickMenuButton()
+    if self._quick_button or not self:isTechNewsDocument() then return end
+    if require("apps/reader/readerui").instance ~= self.ui then return end
+    if not (self.ui.view and self.ui.view.registerViewModule) then return end
+    local Screen = Device.screen
+    local sw, sh = Screen:getWidth(), Screen:getHeight()
+    local margin = Screen:scaleBySize(6)
+    -- 顶部状态栏之下（读 footer 高度；无 footer 时贴着顶缘）
+    local top_offset = 0
+    if self.ui.footer and self.ui.footer.getHeight then
+        local ok, h = pcall(self.ui.footer.getHeight, self.ui.footer)
+        if ok and h then top_offset = h end
+    end
+    local dots = TextWidget:new{
+        text = "…",
+        face = Font:getFace("cfont", 22),
+    }
+    local dots_size = dots:getSize()
+    local x, y = sw - dots_size.w - margin, top_offset + margin
+    local area = math.max(dots_size.w, dots_size.h) + Screen:scaleBySize(16) -- 点击区比点大一圈
+    self._quick_button = {
+        paintTo = function(_, bb)
+            dots:paintTo(bb, x, y)
+        end,
+    }
+    self.ui.view:registerViewModule("technews_quickmenu_dots", self._quick_button)
+    self._quick_zone = {
+        id = "technews_quickmenu_tap",
+        ges = "tap",
+        screen_zone = {
+            ratio_x = (sw - area - margin) / sw, ratio_y = (top_offset + margin) / sh,
+            ratio_w = area / sw, ratio_h = area / sh,
+        },
+        overrides = QUICK_ZONE_OVERRIDES,
+        handler = function()
+            self:onShowTechNewsQuickMenu()
+            return true
+        end,
+    }
+    self.ui:registerTouchZones({ self._quick_zone })
+    UIManager:setDirty(self.ui.view, "ui")
+end
+
+function TechNews:hideQuickMenuButton()
+    if self._quick_button then
+        if self.ui.view and self.ui.view.view_modules then
+            self.ui.view.view_modules.technews_quickmenu_dots = nil
+        end
+        self._quick_button = nil
+    end
+    if self._quick_zone and self.ui and self.ui.unRegisterTouchZones then
+        self.ui:unRegisterTouchZones({ self._quick_zone })
+        self._quick_zone = nil
+    end
+end
+
+function TechNews:onReaderReady()
+    -- ReaderReady 派发于 ReaderUI 入栈之前：延迟到阅读界面真正显示，按钮才会浮在其上方
+    UIManager:scheduleIn(0.3, function()
+        self:showQuickMenuButton()
+    end)
+end
+
+function TechNews:onCloseDocument()
+    self:hideQuickMenuButton()
 end
 
 --- 抓取一个源。必须在 Trapper:wrap 协程内调用。
@@ -620,21 +896,16 @@ function TechNews:fetchSource(source, limit, progress)
         end
     end
 
-    -- 2) 下载图片（可关闭；总量与单条数量都设上限）
+    -- 2) 下载图片（可关闭；按整期总量设上限，单条不限）
     local images = {}
     if self:withImages() then
         local pending = {}
         local seen = {}
         for _, item in ipairs(result) do
-            local per_item = source.max_images_per_item -- nil = 不限（取全部图片）
-            local count = 0
             for _, block in ipairs(item.blocks) do
-                if block.img and (not per_item or count < per_item) then
-                    if not seen[block.img] then
-                        seen[block.img] = true
-                        pending[#pending + 1] = { url = block.img }
-                    end
-                    count = count + 1
+                if block.img and not seen[block.img] then
+                    seen[block.img] = true
+                    pending[#pending + 1] = { url = block.img }
                 end
             end
         end
@@ -685,6 +956,7 @@ function TechNews:buildAndOpen(issue_id, title, date, items, images)
     }, path)
     if not ok then
         logger.warn("technews epub build failed:", tostring(err))
+        os.remove(path .. ".part") -- 清理构建中断残留（与 favorites.add 一致）
         Trapper:clear()
         UIManager:scheduleIn(0.1, function()
             UIManager:show(InfoMessage:new{
@@ -776,6 +1048,34 @@ function TechNews:currentIssueArticle()
         if item.title == title then
             return item, issue_path
         end
+    end
+    return nil
+end
+
+--- 按文档路径反查收藏条目（索引里存的是相对路径，以文件名为准比对）
+function TechNews:favoriteEntryForDocument(path)
+    if not path then return nil end
+    local base = path:match("([^/]+)$")
+    for _, entry in ipairs(favorites.load()) do
+        if entry.file and entry.file:match("([^/]+)$") == base then
+            return entry
+        end
+    end
+    return nil
+end
+
+--- 可操作的当前文章：优先本期 sidecar（每日缓存期），其次按收藏快照反查索引（阅读收藏时）
+function TechNews:currentActionableArticle()
+    local article, issue_path = self:currentIssueArticle()
+    if article then return article, issue_path end
+    local doc_path = self.ui and self.ui.document and self.ui.document.file
+    local entry = self:favoriteEntryForDocument(doc_path)
+    if entry then
+        return {
+            title = entry.title,
+            link = entry.link,
+            source_name = entry.source_name,
+        }
     end
     return nil
 end

@@ -236,23 +236,25 @@ function Epub.build(data, output_path)
     assert(#items > 0, "empty items")
     local title = data.title or ("科技资讯 · " .. date)
     local identifier = "technews-" .. date
-    local toc = { { title = "本期目录", href = "cover.xhtml" } }
+    local toc = {}
     local chapters = {}
     local image_entries = {}
     local image_counter = 0
 
-    -- 封面：取第一条有图的资讯的首张可用图片
+    -- 封面：取第一条有图的资讯的首张可用图片（收藏快照传 no_cover 跳过）
     local cover = nil
-    for _, item in ipairs(items) do
-        if type(item.blocks) == "table" then
-            for _, block in ipairs(item.blocks) do
-                if block.img and data.images and data.images[block.img] then
-                    cover = data.images[block.img]
-                    break
+    if not data.no_cover then
+        for _, item in ipairs(items) do
+            if type(item.blocks) == "table" then
+                for _, block in ipairs(item.blocks) do
+                    if block.img and data.images and data.images[block.img] then
+                        cover = data.images[block.img]
+                        break
+                    end
                 end
             end
+            if cover then break end
         end
-        if cover then break end
     end
 
     -- 渲染一个内容块（文字或图片）；文字块按 kind 选择标签：
@@ -332,11 +334,15 @@ function Epub.build(data, output_path)
         }
     end
     overview[#overview + 1] = "</ol>"
-    table.insert(chapters, 1, {
-        href = "cover.xhtml",
-        title = "本期目录",
-        body = xhtml(title, table.concat(overview, "\n")),
-    })
+    -- 目录/概览页（cover.xhtml）：收藏快照传 no_overview 跳过（打开即正文）
+    if not data.no_overview then
+        table.insert(toc, 1, { title = "本期目录", href = "cover.xhtml" })
+        table.insert(chapters, 1, {
+            href = "cover.xhtml",
+            title = "本期目录",
+            body = xhtml(title, table.concat(overview, "\n")),
+        })
+    end
 
     local manifest, spine, entries = {}, {}, {
         { name = "mimetype", data = "application/epub+zip" },
