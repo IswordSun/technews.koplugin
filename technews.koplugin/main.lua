@@ -55,7 +55,7 @@ local MAX_IMAGES_PER_ISSUE = 150
 local TechNews = WidgetContainer:extend{
     name = "technews",
     is_doc_only = false,
-    version = "0.1.1",
+    version = "0.1.2",
 }
 
 -- 自测只执行一次：插件用 dofile 加载，模块级变量会随 UI 重建被重置，
@@ -396,7 +396,7 @@ function TechNews:getSourceSettingItems()
         items[#items + 1] = {
             text_func = function()
                 local mark = subscriptions.is_enabled(source, self:sourceSetting())
-                    and "✓ " or "▢ "
+                    and "☑ " or "☐ "
                 return mark .. source.name
             end,
             keep_menu_open = true,
@@ -444,7 +444,7 @@ function TechNews:getSettingItems()
         text = "包含图片",
         keep_menu_open = true,
         text_func = function()
-            return (self:withImages() and "✓ " or "▢ ") .. "包含图片"
+            return (self:withImages() and "☑ " or "☐ ") .. "包含图片"
         end,
         callback = function()
             G_reader_settings:saveSetting("technews_with_images",
@@ -455,6 +455,7 @@ function TechNews:getSettingItems()
     }
     items[#items + 1] = {
         text = "清理全部缓存",
+        keep_menu_open = true,
         callback = function() self:confirmClearCache() end,
     }
     return items
