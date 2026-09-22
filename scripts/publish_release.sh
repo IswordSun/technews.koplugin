@@ -24,7 +24,7 @@ OUT_DIR="$(mktemp -d)"
 trap 'rm -rf "$OUT_DIR"' EXIT
 ZIP="$OUT_DIR/technews.koplugin-$TAG.zip"
 git archive --format=zip --prefix="technews.koplugin/" -o "$ZIP" "HEAD:technews.koplugin"
-echo "打包完成: $ZIP（版本 $TAG）"
+echo "打包完成: ${ZIP}（版本 ${TAG}）"
 
 if [ "${1:-}" = "--notes-file" ] && [ -n "${2:-}" ]; then
     NOTES_ARGS=(--notes-file "$2")
