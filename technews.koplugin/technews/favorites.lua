@@ -133,23 +133,46 @@ end
 --- 覆盖写入索引（dump 序列化的 Lua 表，可直接 loadfile 读回）
 function favorites.save(list)
     if not ensure_dirs() then return nil, "无法创建收藏目录" end
-    local file, err = io.open(favorites.index_path, "wb")
+    -- 原子写：先写 .part 再 rename，写一半崩溃不会损坏原索引
+    local tmp_path = favorites.index_path .. ".part"
+    local file, err = io.open(tmp_path, "wb")
     if not file then return nil, err end
     -- dump 产物是表达式，须前置 return 才是合法 Lua chunk（loadfile 要求语句）
     local ok, write_err = file:write("return ", dump(list))
     file:close()
-    if not ok then return nil, write_err end
+    if not ok then
+        os.remove(tmp_path)
+        return nil, write_err
+    end
+    local renamed, rename_err = os.rename(tmp_path, favorites.index_path)
+    if not renamed then
+        os.remove(tmp_path)
+        return nil, rename_err
+    end
     return true
 end
 
 --- 写入某期 EPUB 的条目 sidecar（<epub_path>.items.lua）。
 -- 只含元数据与内容块（图片二进制不在其中），供阅读器内「收藏当前文章」定位当前条目。
+-- 精简：只序列化下游实际消费的字段（title/link/source_name/time/blocks）。
+-- summary/summary_html 是抓取阶段的原始 HTML（最大字段），而 sidecar 每次
+-- 菜单渲染都被 load_sidecar 重新解析，写入它们纯属拖慢渲染且无人读取。
 function favorites.write_sidecar(epub_path, title, date, items)
+    local slim = {}
+    for i, item in ipairs(items or {}) do
+        slim[i] = {
+            title = item.title,
+            link = item.link,
+            source_name = item.source_name,
+            time = item.time,
+            blocks = item.blocks,
+        }
+    end
     local ok, err = pcall(function()
         local file, open_err = io.open(epub_path .. ".items.lua", "wb")
         if not file then error(open_err) end
         -- 同索引：dump 是表达式，前置 return 后 loadfile 才能执行
-        file:write("return ", dump({ title = title, date = date, items = items }))
+        file:write("return ", dump({ title = title, date = date, items = slim }))
         file:close()
     end)
     if not ok then

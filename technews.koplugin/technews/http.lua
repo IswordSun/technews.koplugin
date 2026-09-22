@@ -1,7 +1,8 @@
 -- technews/http.lua — HTTPS GET（LuaSocket + LuaSec，带超时与重试）
 --
--- 备注：部分站点（如 CNBeta）偶发直接断开连接，表现为返回 "closed" 错误码，
--- 因此这里内置 2 次重试；错误信息会区分"连接失败 / HTTP 状态码 / 网络错误"。
+-- 备注：部分站点偶发直接断开连接，表现为返回 "closed" 错误码，因此这里内置
+-- 3 次重试（仅连接层错误与 5xx 重试，4xx 立即返回）；错误信息会区分
+-- "连接失败 / HTTP 状态码 / 网络错误"。
 
 local ltn12 = require("ltn12")
 local socket = require("socket")
@@ -58,6 +59,8 @@ end
 -- @param opts 可选：{ referer = "..." }，给出时随请求发送 Referer 头（图床防盗链用）
 -- 备注：重试之间加短暂延迟，部分站点对高频请求会直接断连（closed），
 -- 小幅退避能显著提高成功率。
+-- 重试策略：仅连接层失败（错误信息无 "HTTP <状态码>"）与 HTTP 5xx 重试；
+-- HTTP 4xx（失效订阅源的 404、图床 403 等）重试无意义，立即返回。
 function http.get(url, block_timeout, total_timeout, retries, opts)
     retries = retries or 3
     local referer = opts and opts.referer
@@ -68,11 +71,15 @@ function http.get(url, block_timeout, total_timeout, retries, opts)
             return body
         end
         last_err = err
-        if attempt <= retries then
-            logger.warn("technews http retry:", url,
-                "attempt=" .. attempt, tostring(err))
-            socket.sleep(0.6)
+        -- 仅连接层错误（无 "HTTP <code>" 前缀）或 5xx 可重试；4xx 等立即返回，
+        -- 避免每次失败都白等数轮超时与退避（如失效 feed 的 404）
+        local http_code = tostring(err):match("^HTTP (%d+)")
+        if attempt > retries or (http_code and http_code:sub(1, 1) ~= "5") then
+            break
         end
+        logger.warn("technews http retry:", url,
+            "attempt=" .. attempt, tostring(err))
+        socket.sleep(0.6)
     end
     logger.warn("technews http failed:", url, tostring(last_err))
     return nil, last_err

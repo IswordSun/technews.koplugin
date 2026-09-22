@@ -41,6 +41,8 @@ local remove_recursive
 
 --- 删除指定日期的全部 EPUB 及其 .sdr 阅读状态（重新抓取用）
 function storage:clear_date(date)
+    -- 目录不存在时 lfs.dir 迭代会抛错，直接返回
+    if lfs.attributes(self.dir, "mode") ~= "directory" then return end
     local suffix = "-" .. date .. ".epub"
     local names = {}
     for name in lfs.dir(self.dir) do
@@ -57,6 +59,8 @@ end
 
 --- 清空全部缓存（EPUB 与对应 .sdr 阅读状态）
 function storage:clear_all()
+    -- 目录不存在时 lfs.dir 迭代会抛错，直接返回
+    if lfs.attributes(self.dir, "mode") ~= "directory" then return end
     local names = {}
     for name in lfs.dir(self.dir) do
         if name:sub(-5) == ".epub" then
@@ -68,18 +72,6 @@ function storage:clear_all()
         remove_recursive(self.dir .. name .. ".sdr")
         os.remove(self.dir .. name .. ".items.lua") -- 条目 sidecar（收藏定位用）
     end
-end
-
---- 已缓存的文件列表（调试用）
-function storage:list()
-    local names = {}
-    for name in lfs.dir(self.dir) do
-        if name:sub(-5) == ".epub" then
-            names[#names + 1] = name
-        end
-    end
-    table.sort(names)
-    return names
 end
 
 -- 递归删除文件/目录（用于清理 EPUB 与 .sdr 阅读状态目录）
@@ -99,6 +91,8 @@ end
 
 --- 清理超过 retain_days 天的缓存（EPUB 与对应 .sdr 阅读状态）。
 function storage:cleanup(retain_days)
+    -- 目录不存在时 lfs.dir 迭代会抛错，直接返回
+    if lfs.attributes(self.dir, "mode") ~= "directory" then return 0 end
     retain_days = retain_days or 7
     local cutoff = os.time() - retain_days * 86400
     local names = {}

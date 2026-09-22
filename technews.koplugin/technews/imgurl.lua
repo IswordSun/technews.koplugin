@@ -29,11 +29,17 @@
 local imgurl = {}
 
 -- 各图床的重写规则：按顺序匹配，先匹配先赢。
--- host   = 匹配 URL 前缀的 Lua 模式
+-- host   = 匹配 URL 前缀的 Lua 模式，或模式数组（任一命中即算匹配；
+--          Lua 模式没有 | 与分组量词，根域 + 子域这类“或”只能写成多模式）
 -- recipe = string.format 模板（参数：去掉查询串与 fragment 的基础 URL、宽度）
 local RULES = {
     {
-        host = "^https?://[^/]*ithome%.com/",
+        -- 主机须锚定：只匹配 ithome.com 根域或其子域（如 img.ithome.com）。
+        -- 不能写成 [^/]*ithome%.com——"notithome.com" 这类前缀伪域会误命中
+        host = {
+            "^https?://ithome%.com/",
+            "^https?://[%w%-%.]*%.ithome%.com/",
+        },
         recipe = "%s?x-bce-process=image/resize,m_lfit,w_%d,limit_1/quality,q_75",
     },
     {
@@ -61,6 +67,17 @@ local REFERER_RULES = {
     { host = "^https?://cdnfile%.sspai%.com/", referer = "https://sspai.com/" },
 }
 
+--- 规则的主机模式是否命中 URL（host 为字符串或模式数组）。
+local function host_matches(url, host)
+    if type(host) == "table" then
+        for _, pattern in ipairs(host) do
+            if url:match(pattern) then return true end
+        end
+        return false
+    end
+    return url:match(host) ~= nil
+end
+
 --- 生成 CDN 缩放 URL。
 -- @param url 原图 URL
 -- @param width 目标最大宽度（像素）
@@ -68,7 +85,7 @@ local REFERER_RULES = {
 function imgurl.rewrite(url, width)
     if not url or url == "" or not width then return nil end
     for _, rule in ipairs(RULES) do
-        if url:match(rule.host) then
+        if host_matches(url, rule.host) then
             -- 丢掉原查询串与 fragment：两家图床的原参数都会被新配方整段替换，
             -- 追加第二个同名参数会被 CDN 忽略（返回原图）
             local base = url:match("^[^?#]+")
@@ -83,7 +100,7 @@ end
 function imgurl.referer(url)
     if not url or url == "" then return nil end
     for _, rule in ipairs(REFERER_RULES) do
-        if url:match(rule.host) then
+        if host_matches(url, rule.host) then
             return rule.referer
         end
     end
