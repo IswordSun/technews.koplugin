@@ -215,6 +215,114 @@ do
     contains(items[3].summary_html, "FALLBACK_THREE", "自闭合 content:encoded 回退 description")
 end
 
+-- Atom（<entry> / rel=alternate / content / updated ISO8601）
+----------------------------------------------------------------------
+do
+    local atom = [==[
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>某博客</title>
+  <entry>
+    <title>周刊第 413 期</title>
+    <link rel="self" href="https://example.com/feed"/>
+    <link rel="alternate" type="text/html" href="https://example.com/post/413"/>
+    <updated>2026-09-23T04:17:20Z</updated>
+    <content type="html"><![CDATA[<p>ATOM_BODY 正文内容</p>]]></content>
+    <summary>ATOM_SUMMARY 摘要</summary>
+  </entry>
+</feed>]==]
+    local items = rss.parse(atom)
+    eq(#items, 1, "Atom：解析出 1 个 entry")
+    eq(items[1].title, "周刊第 413 期", "Atom：标题解析")
+    eq(items[1].link, "https://example.com/post/413", "Atom：优先 rel=alternate 链接")
+    contains(items[1].summary_html, "ATOM_BODY", "Atom：content 优先于 summary")
+    eq(items[1].ts and os.date("!%Y-%m-%d %H:%M", items[1].ts), "2026-09-23 04:17",
+        "Atom：updated（ISO8601/Z）解析正确")
+end
+
+----------------------------------------------------------------------
+-- 新增时间格式：中国式（含/不含时区）与 dc:date（Slashdot 类 RDF）
+----------------------------------------------------------------------
+do
+    local rss_xml = [==[
+<rss version="2.0">
+<channel>
+  <item>
+    <title>三十六氪式</title>
+    <link>https://example.com/a</link>
+    <description>BODY_A</description>
+    <pubDate>2026-09-23 12:17:14  +0800</pubDate>
+  </item>
+  <item>
+    <title>无时区</title>
+    <link>https://example.com/b</link>
+    <description>BODY_B</description>
+    <pubDate>2026-09-23 15:37:57</pubDate>
+  </item>
+</channel>
+</rss>]==]
+    local items = rss.parse(rss_xml)
+    eq(items[1].ts and os.date("!%m-%d %H:%M", items[1].ts), "09-23 04:17",
+        "中国式时间（+0800）解析正确")
+    eq(items[2].ts and os.date("!%m-%d %H:%M", items[2].ts), "09-23 07:37",
+        "无时区时间按 +0800 解析")
+
+    local rdf = [==[
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:dc="http://purl.org/dc/elements/1.1/">
+<item rdf:about="https://example.com/s/1">
+  <title>RDF 条目</title>
+  <link>https://example.com/s/1</link>
+  <description>RDF_BODY 正文</description>
+  <dc:date>2026-09-22T20:54:21-04:00</dc:date>
+</item>
+</rdf:RDF>]==]
+    local r_items = rss.parse(rdf)
+    eq(#r_items, 1, "RDF：带属性的 <item> 可解析")
+    contains(r_items[1].summary, "RDF_BODY", "RDF：description 正文保留")
+    eq(r_items[1].ts and os.date("!%m-%d %H:%M", r_items[1].ts), "09-23 00:54",
+        "RDF：dc:date（ISO8601 带 -04:00）解析正确")
+end
+
+-- 无 pubDate 时从链接路径推断日期（/YYYY/MM/DD/）
+----------------------------------------------------------------------
+do
+    local xml = [==[
+<rss version="2.0"><channel>
+  <item>
+    <title>美团技术文</title>
+    <link>https://tech.example.com/2026/09/22/some-post.html</link>
+    <description>BODY</description>
+  </item>
+  <item>
+    <title>无日期无线索</title>
+    <link>https://example.com/no-date</link>
+    <description>BODY2</description>
+  </item>
+</channel></rss>]==]
+    local items = rss.parse(xml)
+    eq(items[1].ts and os.date("!%m-%d %H:%M", items[1].ts), "09-21 16:00",
+        "无 pubDate：从链接 /YYYY/MM/DD/ 推断（当日 00:00 +0800）")
+    eq(items[2].ts, nil, "链接无线索时保持无时间（由上层视为当日）")
+end
+
+-- Atom 属性用单引号（Blogger / The Hacker News 实际格式）
+----------------------------------------------------------------------
+do
+    local atom = [==[
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>Single quoted</title>
+    <link rel='alternate' type='text/html' href='https://example.com/sq/1'/>
+    <updated>2026-09-23T06:00:00Z</updated>
+    <content type='html'><![CDATA[<p>SQ_BODY 正文</p>]]></content>
+  </entry>
+</feed>]==]
+    local items = rss.parse(atom)
+    eq(#items, 1, "Atom 单引号属性：可解析")
+    eq(items[1].link, "https://example.com/sq/1", "Atom 单引号：rel=alternate 链接解析")
+    contains(items[1].summary_html, "SQ_BODY", "Atom 单引号：content 解析")
+end
+
 ----------------------------------------------------------------------
 print(("%d checks, %d failed"):format(checks, failed))
 if failed > 0 then os.exit(1) end
