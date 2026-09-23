@@ -426,7 +426,8 @@ function TechNews:getHomeItems()
             callback = function()
                 UIManager:show(InfoMessage:new{
                     text = "科技资讯订阅 v" .. self.version
-                        .. "\n\n作者：Isword先生\n数据来源：IT之家 等 6 个订阅源\n内容仅供个人阅读学习。",
+                        .. "\n\n作者：Isword先生\n数据来源：IT之家、36氪 等 26 个订阅源"
+                        .. "\n内容仅供个人阅读学习。",
                 })
             end,
         },
