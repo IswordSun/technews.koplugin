@@ -307,6 +307,19 @@ function TechNews:setSourceSetting(set)
     storage:clear_date(today_str())
 end
 
+--- 将某个源加入启用集合（已启用则无操作；变更经 setSourceSetting 自动清当天缓存）
+function TechNews:enableSource(source)
+    local ids = {}
+    for _, adapter in ipairs(subscriptions.enabled(registry, self:sourceSetting())) do
+        ids[#ids + 1] = adapter.id
+    end
+    local set = subscriptions.to_set(ids)
+    if not set[source.id] then
+        set[source.id] = true
+        self:setSourceSetting(set)
+    end
+end
+
 --- 当前文档是否由本插件生成（路径判定：数据目录下的 technews/，覆盖缓存期与收藏快照）
 function TechNews:isTechNewsDocument()
     local doc_file = self.ui and self.ui.document and self.ui.document.file
@@ -434,14 +447,34 @@ function TechNews:getHomeItems()
     }
 end
 
---- 「分源阅读」子菜单：每次展开按当前启用集合生成（订阅源设置改动后立即生效）
+--- 「分源阅读」子菜单：列出全部内置源（含未启用者，带 ☑/☐ 标记；
+-- 未启用时点击先询问「启用并阅读」，与「订阅源设置」的勾选语义一致）
 function TechNews:getSourceReadItems()
     local items = {}
-    for _, source in ipairs(subscriptions.enabled(registry, self:sourceSetting())) do
+    for _, source in ipairs(registry) do
         items[#items + 1] = {
-            text = source.menu_label or (source.name .. " · 今日资讯"),
+            text_func = function()
+                local mark = subscriptions.is_enabled(source, self:sourceSetting())
+                    and "☑ " or "☐ "
+                return mark .. (source.menu_label or (source.name .. " · 今日资讯"))
+            end,
             keep_menu_open = true, -- 抓取期间保持首页（同「打开今日资讯」）
-            callback = function() self:openIssue(source.id) end,
+            callback = function()
+                if subscriptions.is_enabled(source, self:sourceSetting()) then
+                    self:openIssue(source.id)
+                    return
+                end
+                local ConfirmBox = require("ui/widget/confirmbox")
+                UIManager:show(ConfirmBox:new{
+                    text = string.format("「%s」尚未启用。\n\n启用并阅读该源？", source.name),
+                    ok_text = "启用并阅读",
+                    cancel_text = "取消",
+                    ok_callback = function()
+                        self:enableSource(source)
+                        self:openIssue(source.id)
+                    end,
+                })
+            end,
         }
     end
     return items
