@@ -154,6 +154,17 @@ end
 -- validateAndFixToc 会把它当作坏目录"修复"，把正确页码改坏、目录跳转全错
 -- （2026-09-22 实测：「(原页) 86」，子条目全跳到文章开头）。故一律平铺。
 
+-- 二级目录只对"新闻聚合"类文章生成（早报/日报/周刊等，按标题关键词识别）；
+-- 普通文章即便有多个小标题也不建（2026-09-24 按用户要求收窄）。
+-- 注意 Lua 模式不支持 | 或分组量词，这里用关键词逐个 find 匹配。
+local DIGEST_KEYWORDS = { "早报", "日报", "晚报", "午报", "周报", "周刊", "简讯", "盘点", "汇总" }
+local function is_digest_title(title)
+    for _, word in ipairs(DIGEST_KEYWORDS) do
+        if title:find(word, 1, true) then return true end
+    end
+    return false
+end
+
 -- 目录项 → nav 的 <li>；带 subs（文内小标题）时内嵌一层锚点 <ol>
 local function nav_li(entry)
     local link = '<a href="text/' .. entry.href .. '">' .. escape(entry.title) .. "</a>"
@@ -315,7 +326,9 @@ function Epub.build(data, output_path)
                 end
             end
         end
-        local with_subs = heading_total >= 2
+        -- 二级目录：仅"新闻聚合"类文章（早报/日报/周刊…）且小标题 ≥2 条时生成；
+        -- 普通文章不加锚点、不建子目录
+        local with_subs = heading_total >= 2 and is_digest_title(item_title)
         if type(item.blocks) == "table" and #item.blocks > 0 then
             for _, block in ipairs(item.blocks) do
                 local anchor
