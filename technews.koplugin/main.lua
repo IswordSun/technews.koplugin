@@ -43,7 +43,7 @@ local MAX_IMAGES_PER_ISSUE = 150
 local TechNews = WidgetContainer:extend{
     name = "technews",
     is_doc_only = false,
-    version = "0.1.8",
+    version = "0.1.9",
 }
 
 -- 自测只执行一次：插件用 dofile 加载，模块级变量会随 UI 重建被重置，
