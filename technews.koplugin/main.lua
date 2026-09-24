@@ -11,26 +11,13 @@
 -- 一次性守卫：插件经 dofile 重载会重置模块级变量，必须用全局记录
 -- luacheck: globals G_technews_sources_prompted G_technews_end_patch G_technews_toc_patch
 
-local Blitbuffer = require("ffi/blitbuffer")
-local ButtonTable = require("ui/widget/buttontable")
-local CenterContainer = require("ui/widget/container/centercontainer")
-local CheckButton = require("ui/widget/checkbutton")
 local Device = require("device")
 local Dispatcher = require("dispatcher")
 local Font = require("ui/font")
-local FrameContainer = require("ui/widget/container/framecontainer")
-local Geom = require("ui/geometry")
-local GestureRange = require("ui/gesturerange")
 local InfoMessage = require("ui/widget/infomessage")
-local InputContainer = require("ui/widget/container/inputcontainer")
-local MovableContainer = require("ui/widget/container/movablecontainer")
-local Size = require("ui/size")
-local TextBoxWidget = require("ui/widget/textboxwidget")
 local TextWidget = require("ui/widget/textwidget")
 local Trapper = require("ui/trapper")
 local UIManager = require("ui/uimanager")
-local VerticalGroup = require("ui/widget/verticalgroup")
-local VerticalSpan = require("ui/widget/verticalspan")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local logger = require("logger")
 
@@ -91,134 +78,6 @@ end
 -- （少数派 cdnfile.sspai.com 不带 Referer 会 403；其余图床不带，见 imgurl.referer）
 local function download_image(url)
     return http.get(url, nil, nil, nil, { referer = imgurl.referer(url) })
-end
-
--- 「选择订阅源」多选对话框（容器结构参照 KOReader 的 ConfirmBox）：
--- CenterContainer > MovableContainer > FrameContainer > VerticalGroup
---   （标题 + 提示 + 每源一个 CheckButton）+ ButtonTable（取消/确定）
--- 点对话框外或按返回键 = 取消（不保存）
-local SourceSelectDialog = InputContainer:extend{
-    modal = true,
-    dismissable = true,
-    sources = nil,    -- 适配器数组（决定行数与顺序）
-    checked = nil,    -- { [source.id] = true } 初始勾选状态
-    on_confirm = nil, -- 确定回调，参数为勾选集合 { [id] = true }
-}
-
-function SourceSelectDialog:init()
-    local screen = Device.screen
-    local width = math.floor(math.min(screen:getWidth(), screen:getHeight()) * 2/3)
-
-    -- 每个登记源一个勾选项，初始状态即当前启用状态
-    self.check_buttons = {}
-    local source_list = VerticalGroup:new{ align = "left" }
-    for _, source in ipairs(self.sources) do
-        local button = CheckButton:new{
-            text = source.name,
-            checked = self.checked[source.id] == true,
-            parent = self,
-            width = width,
-        }
-        self.check_buttons[source.id] = button
-        table.insert(source_list, button)
-    end
-
-    local buttons = {{ -- 单行：取消 / 确定
-        {
-            text = "取消",
-            callback = function()
-                UIManager:close(self)
-            end,
-        },
-        {
-            text = "确定",
-            callback = function()
-                local set = {}
-                for id, button in pairs(self.check_buttons) do
-                    if button.checked then set[id] = true end
-                end
-                self.on_confirm(set)
-                UIManager:close(self)
-            end,
-        },
-    }}
-
-    local frame = FrameContainer:new{
-        background = Blitbuffer.COLOR_WHITE,
-        radius = Size.radius.window,
-        padding = Size.padding.default,
-        padding_bottom = 0, -- 底部不留白，由按钮行接管
-        VerticalGroup:new{
-            align = "left",
-            TextWidget:new{
-                text = "选择订阅源",
-                face = Font:getFace("infofont"),
-                bold = true,
-            },
-            VerticalSpan:new{ width = Size.span.vertical_default },
-            TextBoxWidget:new{
-                text = "之后可在「订阅源设置」里修改，点「确定」保存",
-                face = Font:getFace("smallinfofont"),
-                width = width,
-            },
-            VerticalSpan:new{ width = Size.padding.large },
-            source_list,
-            VerticalSpan:new{ width = Size.padding.large },
-            ButtonTable:new{
-                width = width,
-                buttons = buttons,
-                zero_sep = true,
-                show_parent = self,
-            },
-        },
-    }
-    self.movable = MovableContainer:new{ frame }
-    self[1] = CenterContainer:new{
-        dimen = screen:getSize(),
-        self.movable,
-    }
-
-    if self.dismissable then
-        if Device:isTouchDevice() then
-            self.ges_events.TapClose = {
-                GestureRange:new{
-                    ges = "tap",
-                    range = Geom:new{
-                        x = 0, y = 0,
-                        w = screen:getWidth(), h = screen:getHeight(),
-                    },
-                },
-            }
-        end
-        if Device:hasKeys() then
-            self.key_events.Close = { { Device.input.group.Back } }
-        end
-    end
-end
-
-function SourceSelectDialog:onTapClose(_, ges)
-    if ges.pos:notIntersectWith(self.movable.dimen) then
-        UIManager:close(self)
-    end
-    -- 不把点击传播给下层控件
-    return true
-end
-
-function SourceSelectDialog:onClose()
-    UIManager:close(self)
-    return true
-end
-
-function SourceSelectDialog:onShow()
-    UIManager:setDirty(self, function()
-        return "ui", self.movable.dimen
-    end)
-end
-
-function SourceSelectDialog:onCloseWidget()
-    UIManager:setDirty(nil, function()
-        return "ui", self.movable.dimen
-    end)
 end
 
 function TechNews:init()
@@ -339,11 +198,15 @@ end
 
 --- 打开「科技资讯」全屏首页（用 Menu 部件铺满全屏；条目见 getHomeItems）
 function TechNews:openHome()
-    -- 首次使用：打开首页即引导选择订阅源（全局标记防 dofile 重载后重复弹出）
+    -- 首次使用：不再弹多选（26 个源弹一大串体验差），改为提示去设置里选择（每会话一次）
     if self:sourceSetting() == nil and not G_technews_sources_prompted then
         G_technews_sources_prompted = true
         UIManager:scheduleIn(0.2, function()
-            self:promptSourceSelection()
+            UIManager:show(InfoMessage:new{
+                text = "首次使用：请到「设置 → 订阅源设置」中选择要订阅的源。\n\n"
+                    .. "默认启用：IT之家、雷锋网；也可在「分源阅读」里逐个启用。",
+                timeout = 6,
+            })
         end)
     end
 
@@ -624,28 +487,6 @@ function TechNews:getFavoriteManageItems()
         items[1] = { text = "暂无收藏", select_enabled = false }
     end
     return items
-end
-
---- 首次使用引导：多选订阅源（确定后保存，取消不保存）
-function TechNews:promptSourceSelection()
-    local setting = self:sourceSetting()
-    local checked = {}
-    for _, source in ipairs(registry) do
-        if subscriptions.is_enabled(source, setting) then
-            checked[source.id] = true
-        end
-    end
-    UIManager:show(SourceSelectDialog:new{
-        sources = registry,
-        checked = checked,
-        on_confirm = function(set)
-            self:setSourceSetting(set)
-            UIManager:show(InfoMessage:new{
-                text = "订阅源已保存",
-                timeout = 2,
-            })
-        end,
-    })
 end
 
 function TechNews:onDispatcherRegisterActions()
