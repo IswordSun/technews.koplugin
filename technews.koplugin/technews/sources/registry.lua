@@ -44,4 +44,11 @@ return {
     require("technews.sources.nine2five"),
     require("technews.sources.bleeping"),
     require("technews.sources.thn"),
+
+    -- 日报类（2026-09-27）：API 驱动、支持按日期回溯
+    -- （分源阅读的「昨日 / 自定义日期 / 近一周」能取到真正的往期）
+    require("technews.sources.zhihudaily"),
+    require("technews.sources.one"),
+    require("technews.sources.readhub"),
+    require("technews.sources.sixty"),
 }

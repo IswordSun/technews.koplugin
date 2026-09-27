@@ -1,4 +1,7 @@
--- technews/http.lua — HTTPS GET（LuaSocket + LuaSec，带超时与重试）
+-- technews/http.lua — HTTP(S) GET（LuaSocket + LuaSec，带超时与重试）
+--
+-- 按 URL 前缀选择传输层：https:// 走 ssl.https，http:// 走 socket.http
+-- （「一个」的 v3 API 与其图片 CDN 只提供 http，需要纯 HTTP 通道）。
 --
 -- 备注：部分站点偶发直接断开连接，表现为返回 "closed" 错误码，因此这里内置
 -- 3 次重试（仅连接层错误与 5xx 重试，4xx 立即返回）；错误信息会区分
@@ -7,6 +10,7 @@
 local ltn12 = require("ltn12")
 local socket = require("socket")
 local https = require("ssl.https")
+local socket_http = require("socket.http")
 local socketutil = require("socketutil")
 local logger = require("logger")
 
@@ -30,8 +34,9 @@ local function request_once(url, block_timeout, total_timeout, referer)
     if referer then
         req_headers["Referer"] = referer
     end
+    local transport = url:match("^http://") and socket_http or https
     -- LuaSocket：成功时返回 (1, 状态码, headers, status)；失败时返回错误码
-    local code, headers, status = socket.skip(1, https.request{
+    local code, headers, status = socket.skip(1, transport.request{
         url = url,
         headers = req_headers,
         sink = ltn12.sink.table(body),

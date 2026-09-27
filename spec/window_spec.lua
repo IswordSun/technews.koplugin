@@ -195,5 +195,85 @@ do
 end
 
 ----------------------------------------------------------------------
+-- day_start_ts(offset)：昨天/前天的 0 点（分源阅读的区间基准）
+----------------------------------------------------------------------
+do
+    local today0 = window.day_start_ts(0)
+    eq(today0, window.local_midnight_ts(), "day_start_ts(0) 等于 local_midnight_ts()")
+    local y = window.day_start_ts(1)
+    local yparts = os.date("*t", y)
+    ok(yparts.hour == 0 and yparts.min == 0 and yparts.sec == 0,
+        "day_start_ts(1) 的时分秒均为 0")
+    ok(os.date("%Y-%m-%d", y) ~= os.date("%Y-%m-%d", today0), "day_start_ts(1) 是另一天")
+    eq(today0 - y, 86400, "day_start_ts(1) 与今日 0 点相差一天")
+    eq(today0 - window.day_start_ts(6), 6 * 86400, "day_start_ts(6) 相差六天")
+end
+
+----------------------------------------------------------------------
+-- filter_range：昨日 = 半开区间 [昨天 0 点, 今天 0 点)
+----------------------------------------------------------------------
+do
+    local start_ts = window.day_start_ts(1)
+    local end_ts = window.day_start_ts(0)
+    local items = {
+        item(start_ts + 3600, "y_morning"),
+        item(start_ts, "y_start"),
+        item(end_ts, "today_start"),
+        item(end_ts - 1, "y_last"),
+        item(start_ts - 1, "before"),
+        item(nil, "no_ts"),
+    }
+    local selected, n = window.filter_range(items, 10, start_ts, end_ts, false)
+    eq(n, 3, "昨日区间命中数正确（含 0 点整与最后一秒，不含 0 点前 1 秒）")
+    eq_ids(selected, { "y_last", "y_morning", "y_start" }, "昨日区间按 ts 倒序")
+    eq(selected[#selected].id, "y_start", "区间下界（含）保留")
+end
+
+----------------------------------------------------------------------
+-- filter_range：指定历史某日（半开区间；无 ts 条目排除；空区间返回空）
+----------------------------------------------------------------------
+do
+    local start_ts = window.day_start_ts(3)
+    local end_ts = window.day_start_ts(2)
+    local items = { item(start_ts + 60, "d1"), item(nil, "no_ts"), item(end_ts + 60, "d2") }
+    local selected, n = window.filter_range(items, 10, start_ts, end_ts, false)
+    eq(n, 1, "指定某日只命中区间内条目")
+    eq_ids(selected, { "d1" }, "指定某日结果正确（无 ts 条目被排除）")
+
+    local empty, n_empty = window.filter_range(items, 10,
+        window.day_start_ts(30), window.day_start_ts(29), false)
+    eq(n_empty, 0, "空区间提前返回 0 条（往期太旧时的中性结果）")
+    eq(#empty, 0, "空区间结果列表为空")
+end
+
+----------------------------------------------------------------------
+-- filter_range：近一周区间允许无 ts 条目（与今日语义一致）
+----------------------------------------------------------------------
+do
+    local start_ts = window.day_start_ts(6)
+    local items = {
+        item(window.day_start_ts(0) + 60, "t"),
+        item(window.day_start_ts(3) + 60, "mid"),
+        item(nil, "no_ts"),
+        item(window.day_start_ts(7) + 60, "too_old"),
+    }
+    local selected, n = window.filter_range(items, 10, start_ts, math.huge, true)
+    eq(n, 3, "近一周命中（含无 ts），区间外旧条目被排除")
+    eq_ids(selected, { "t", "mid", "no_ts" }, "近一周按 ts 倒序，无 ts 排最后")
+end
+
+----------------------------------------------------------------------
+-- filter_range：max_items 截断（截断只作用于区间内集合）
+----------------------------------------------------------------------
+do
+    local items = {}
+    for i = 1, 5 do items[i] = item(midnight + i * 60, "w" .. i) end
+    local selected, n = window.filter_range(items, 2, midnight, math.huge, true)
+    eq(#selected, 2, "filter_range 按 max_items 截断")
+    eq(n, 5, "filter_range 截断前条数正确")
+    eq_ids(selected, { "w5", "w4" }, "filter_range 截断保留最新条目")
+end
+
+----------------------------------------------------------------------
 print(("%d checks, %d failed"):format(checks, failed))
 if failed > 0 then os.exit(1) end

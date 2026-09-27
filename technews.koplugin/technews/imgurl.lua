@@ -61,10 +61,14 @@ local RULES = {
 }
 
 -- 抓图时需要携带 Referer 的图床（未列出的域名一律不带）。
--- 少数派：不带 Referer 返回 403；其余图床（尤其微信 mmbiz.qpic.cn，
--- 带第三方 Referer 会返回 140x140 占位图）必须保持不带 Referer。
+-- 少数派：不带 Referer 返回 403；知乎 pic*.zhimg.com 同样需要（zhihudaily
+-- 插件实测）；「一个」 image.wufazhuce.com 参考 one.koplugin 携带站点 Referer。
+-- 其余图床（尤其微信 mmbiz.qpic.cn，带第三方 Referer 会返回 140x140 占位图）
+-- 必须保持不带 Referer。
 local REFERER_RULES = {
     { host = "^https?://cdnfile%.sspai%.com/", referer = "https://sspai.com/" },
+    { host = "^https?://[%w%-%.]*%.zhimg%.com/", referer = "https://news-at.zhihu.com/" },
+    { host = "^https?://[%w%-%.]*%.wufazhuce%.com/", referer = "https://wufazhuce.com/" },
 }
 
 --- 规则的主机模式是否命中 URL（host 为字符串或模式数组）。

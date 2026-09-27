@@ -1,8 +1,8 @@
--- 科技资讯订阅 — 多源 RSS 订阅阅读器
+-- 知否 — 多源 RSS 订阅阅读器（包名仍为 technews.koplugin）
 --
 -- 入口：
---   顶部菜单 → 科技资讯订阅 → 全屏首页（打开今日 / 分源阅读 / 设置）
---   手势/快捷菜单：Dispatcher 动作「科技资讯订阅」（直接打开合并今日）
+--   顶部菜单 → 知否 → 全屏首页（打开今日 / 分源阅读 / 设置）
+--   手势/快捷菜单：Dispatcher 动作「知否」（直接打开合并今日）
 --
 -- 数据流：RSS/网页 → 内容块（文字+图片）→ 生成整期 EPUB → KOReader 原生阅读器
 --
@@ -57,6 +57,54 @@ end
 local function source_by_id(id)
     for _, source in ipairs(registry) do
         if source.id == id then return source end
+    end
+end
+
+-- 相对今天偏移若干天的日期串（0=今天，1=昨天）
+local function date_str_of(offset_days)
+    return os.date("%Y-%m-%d", os.time() - (offset_days or 0) * 86400)
+end
+
+--- 分源阅读的时间范围描述（kind = today / yesterday / week / date）。
+-- 返回 range = { date=缓存日期, suffix=缓存 id 后缀, start_ts/end_ts=半开区间,
+-- include_no_ts=无时间戳条目是否命中, title=期标题后缀, empty=空结果提示 }；
+-- 非法或未来日期返回 nil, 原因。
+local function issue_range(kind, date)
+    if kind == "today" then
+        return {
+            date = date_str_of(0), suffix = "",
+            start_ts = window.day_start_ts(0), end_ts = math.huge,
+            include_no_ts = true, title = date_str_of(0),
+            empty = "今日暂无新条目",
+        }
+    elseif kind == "yesterday" then
+        return {
+            date = date_str_of(1), suffix = "",
+            start_ts = window.day_start_ts(1), end_ts = window.day_start_ts(0),
+            include_no_ts = false,
+            title = "昨日（" .. os.date("%m月%d日", os.time() - 86400) .. "）",
+            empty = "昨日没有抓到条目（RSS 源只提供最近几天的内容）",
+        }
+    elseif kind == "week" then
+        return {
+            date = date_str_of(0), suffix = "-week",
+            start_ts = window.day_start_ts(6), end_ts = math.huge,
+            include_no_ts = true, title = "近一周",
+            empty = "近一周没有可用条目",
+        }
+    elseif kind == "date" and type(date) == "string" then
+        local y, m, d = date:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)$")
+        if not y then return nil, "无效的日期" end
+        local start_ts = os.time{ year = y, month = m, day = d, hour = 0 }
+        if start_ts >= window.day_start_ts(0) + 86400 then
+            return nil, "这个日期还没到"
+        end
+        return {
+            date = date, suffix = "",
+            start_ts = start_ts, end_ts = start_ts + 86400, include_no_ts = false,
+            title = string.format("%d月%d日", tonumber(m), tonumber(d)),
+            empty = "这一天没有抓到条目（RSS 源只提供最近几天的内容）",
+        }
     end
 end
 
@@ -166,19 +214,6 @@ function TechNews:setSourceSetting(set)
     storage:clear_date(today_str())
 end
 
---- 将某个源加入启用集合（已启用则无操作；变更经 setSourceSetting 自动清当天缓存）
-function TechNews:enableSource(source)
-    local ids = {}
-    for _, adapter in ipairs(subscriptions.enabled(registry, self:sourceSetting())) do
-        ids[#ids + 1] = adapter.id
-    end
-    local set = subscriptions.to_set(ids)
-    if not set[source.id] then
-        set[source.id] = true
-        self:setSourceSetting(set)
-    end
-end
-
 --- 当前文档是否由本插件生成（路径判定：数据目录下的 technews/，覆盖缓存期与收藏快照）
 function TechNews:isTechNewsDocument()
     local doc_file = self.ui and self.ui.document and self.ui.document.file
@@ -187,7 +222,7 @@ end
 
 function TechNews:addToMainMenu(menu_items)
     menu_items.technews = {
-        text = "科技资讯订阅",
+        text = "知否",
         sorting_hint = "tools",
         -- 主菜单只保留一个入口：直接打开全屏首页（不再展开下拉子菜单）
         callback = function()
@@ -196,7 +231,7 @@ function TechNews:addToMainMenu(menu_items)
     }
 end
 
---- 打开「科技资讯」全屏首页（用 Menu 部件铺满全屏；条目见 getHomeItems）
+--- 打开「知否」全屏首页（用 Menu 部件铺满全屏；条目见 getHomeItems）
 function TechNews:openHome()
     -- 首次使用：不再弹多选（26 个源弹一大串体验差），改为提示去设置里选择（每会话一次）
     if self:sourceSetting() == nil and not G_technews_sources_prompted then
@@ -204,7 +239,7 @@ function TechNews:openHome()
         UIManager:scheduleIn(0.2, function()
             UIManager:show(InfoMessage:new{
                 text = "首次使用：请到「设置 → 订阅源设置」中选择要订阅的源。\n\n"
-                    .. "默认启用：IT之家、雷锋网；也可在「分源阅读」里逐个启用。",
+                    .. "默认启用：IT之家、雷锋网。",
                 timeout = 6,
             })
         end)
@@ -216,7 +251,7 @@ function TechNews:openHome()
     -- 全屏页用 Menu 部件（文件列表/目录同款；TouchMenu 是系统菜单那种「顶部部分高度面板」）
     local Menu = require("ui/widget/menu")
     local home_menu = Menu:new{
-        title = "科技资讯订阅",
+        title = "知否",
         item_table = self:getHomeItems(),
         covers_fullscreen = true,
         is_borderless = true,
@@ -285,6 +320,12 @@ function TechNews:getHomeItems()
             end,
         },
         {
+            text = "往期缓存",
+            sub_item_table_func = function()
+                return self:getHistoryItems()
+            end,
+        },
+        {
             text = "分源阅读",
             sub_item_table_func = function()
                 return self:getSourceReadItems()
@@ -301,8 +342,8 @@ function TechNews:getHomeItems()
             keep_menu_open = true,
             callback = function()
                 UIManager:show(InfoMessage:new{
-                    text = "科技资讯订阅 v" .. self.version
-                        .. "\n\n作者：Isword先生\n数据来源：IT之家、36氪 等 26 个订阅源"
+                    text = "知否 v" .. self.version
+                        .. "\n\n作者：Isword先生\n数据来源：IT之家、36氪 等 30 个订阅源"
                         .. "\n内容仅供个人阅读学习。",
                 })
             end,
@@ -310,37 +351,71 @@ function TechNews:getHomeItems()
     }
 end
 
---- 「分源阅读」子菜单：列出全部内置源（含未启用者，带 ☑/☐ 标记；
--- 未启用时点击先询问「启用并阅读」，与「订阅源设置」的勾选语义一致）
+--- 「分源阅读」子菜单：只列已订阅的源（与「订阅源设置」一致，不再带 ☑/☐）；
+-- 点开某个源后询问要读哪段时间（今日 / 昨日 / 近一周 / 自定义日期）
 function TechNews:getSourceReadItems()
     local items = {}
-    for _, source in ipairs(registry) do
+    for _, source in ipairs(subscriptions.enabled(registry, self:sourceSetting())) do
         items[#items + 1] = {
-            text_func = function()
-                local mark = subscriptions.is_enabled(source, self:sourceSetting())
-                    and "☑ " or "☐ "
-                return mark .. (source.menu_label or (source.name .. " · 今日资讯"))
-            end,
+            text = source.menu_label or source.name,
             keep_menu_open = true, -- 抓取期间保持首页（同「打开今日资讯」）
             callback = function()
-                if subscriptions.is_enabled(source, self:sourceSetting()) then
-                    self:openIssue(source.id)
-                    return
-                end
-                local ConfirmBox = require("ui/widget/confirmbox")
-                UIManager:show(ConfirmBox:new{
-                    text = string.format("「%s」尚未启用。\n\n启用并阅读该源？", source.name),
-                    ok_text = "启用并阅读",
-                    cancel_text = "取消",
-                    ok_callback = function()
-                        self:enableSource(source)
-                        self:openIssue(source.id)
-                    end,
-                })
+                self:askIssueRange(source)
             end,
         }
     end
+    if #items == 0 then
+        items[1] = { text = "尚未订阅任何源（去「设置 → 订阅源设置」选择）", select_enabled = false }
+    end
     return items
+end
+
+--- 询问要抓取的时间范围（分源阅读点开某个源后）
+function TechNews:askIssueRange(source)
+    local ButtonDialog = require("ui/widget/buttondialog")
+    local dialog
+    local function pick(kind)
+        return function()
+            UIManager:close(dialog)
+            self:openIssueRange(source, kind)
+        end
+    end
+    dialog = ButtonDialog:new{
+        title = source.menu_label or source.name,
+        buttons = {
+            {
+                { text = "今日", callback = pick("today") },
+                { text = "昨日", callback = pick("yesterday") },
+            },
+            {
+                { text = "近一周", callback = pick("week") },
+                { text = "自定义日期…", callback = function()
+                    UIManager:close(dialog)
+                    self:pickIssueDate(source)
+                end },
+            },
+            {
+                { text = "取消", callback = function() UIManager:close(dialog) end },
+            },
+        },
+    }
+    UIManager:show(dialog)
+end
+
+--- 自定义日期（DateTimeWidget；显式 year_min，默认 2021 会挡住更早的日期）
+function TechNews:pickIssueDate(source)
+    local DateTimeWidget = require("ui/widget/datetimewidget")
+    local today = os.date("*t")
+    UIManager:show(DateTimeWidget:new{
+        year = today.year, month = today.month, day = today.day,
+        year_min = 2015,
+        ok_text = "确定", cancel_text = "取消",
+        title_text = "读哪一天的文章？",
+        callback = function(time)
+            self:openIssueRange(source, "date",
+                string.format("%04d-%02d-%02d", time.year, time.month, time.day))
+        end,
+    })
 end
 
 --- 「订阅源设置」子菜单：每个登记源一个勾选项（勾选即生效并清今日缓存）
@@ -453,6 +528,47 @@ function TechNews:getFavoriteItems()
     return items
 end
 
+--- 「往期缓存」子菜单：列出本机缓存过的各期刊物（近 7 天，随缓存清理自然过期）
+function TechNews:getHistoryItems()
+    local lfs = require("libs/libkoreader-lfs")
+    local items = {}
+    if lfs.attributes(storage.dir, "mode") == "directory" then
+        local entries = {}
+        for name in lfs.dir(storage.dir) do
+            local id, date = name:match("^(.-)%-(%d%d%d%d%-%d%d%-%d%d)%.epub$")
+            if id and date then
+                entries[#entries + 1] = { id = id, date = date, path = storage.dir .. name }
+            end
+        end
+        -- 日期倒序；同一天里合并期在前（更完整），其余按 id 排
+        table.sort(entries, function(a, b)
+            if a.date ~= b.date then return a.date > b.date end
+            return a.id < b.id
+        end)
+        for _, entry in ipairs(entries) do
+            local base_id = entry.id:gsub("%-week$", "")
+            local label
+            if base_id == "merged" then
+                label = "合并期"
+            else
+                local src = source_by_id(base_id)
+                label = (src and (src.menu_label or src.name)) or base_id
+            end
+            if entry.id:sub(-5) == "-week" then label = label .. " · 近一周" end
+            local _, m, d = entry.date:match("(%d+)-(%d+)-(%d+)")
+            items[#items + 1] = {
+                text = string.format("%s · %s月%s日", label, tonumber(m), tonumber(d)),
+                callback = function() self:openEpub(entry.path) end,
+            }
+            if #items >= 40 then break end
+        end
+    end
+    if #items == 0 then
+        items[1] = { text = "暂无缓存", select_enabled = false }
+    end
+    return items
+end
+
 --- 「管理收藏」子菜单：逐条确认删除；删除完成后整体重建条目表以反映成员变化
 function TechNews:getFavoriteManageItems()
     local ConfirmBox = require("ui/widget/confirmbox")
@@ -493,13 +609,13 @@ function TechNews:onDispatcherRegisterActions()
     Dispatcher:registerAction("technews_open", {
         category = "none",
         event = "ShowTechNews",
-        title = "科技资讯订阅",
+        title = "知否",
         general = true,
     })
     Dispatcher:registerAction("technews_quickmenu", {
         category = "none",
         event = "ShowTechNewsQuickMenu",
-        title = "科技资讯快捷菜单",
+        title = "知否快捷菜单",
         general = true,
     })
 end
@@ -513,7 +629,7 @@ function TechNews:onShowTechNewsQuickMenu()
     local ButtonDialog = require("ui/widget/buttondialog")
     if not (self.ui and self.ui.document) then
         UIManager:show(InfoMessage:new{
-            text = "在阅读科技资讯时可用快捷菜单",
+            text = "在阅读知否资讯时可用快捷菜单",
             timeout = 2,
         })
         return true
@@ -521,7 +637,7 @@ function TechNews:onShowTechNewsQuickMenu()
     -- Dispatcher 手势可在任意文档触发：非本插件文档必须拦下，避免「删除并返回」误删用户书籍
     if not self:isTechNewsDocument() then
         UIManager:show(InfoMessage:new{
-            text = "该功能仅用于科技资讯内容",
+            text = "该功能仅用于知否内容",
             timeout = 2,
         })
         return true
@@ -638,15 +754,15 @@ function TechNews:deleteCurrentDocument()
     FileManager:showDeleteFileDialog(doc_path, post_delete_callback, pre_delete_callback)
 end
 
--- 快捷按钮触摸区的覆盖列表：与 bookshelf 插件同款 + 右上角书签角
+-- 快捷按钮触摸区的覆盖列表：与 bookshelf 插件同款 + 左上角区
 local QUICK_ZONE_OVERRIDES = {
     "tap_forward", "tap_backward",
     "readerhighlight_tap", "readerhighlight_tap_select_mode",
     "readerfooter_tap", "readermenu_tap", "readermenu_ext_tap",
-    "tap_top_right_corner",
+    "tap_top_left_corner",
 }
 
---- 阅读界面右上角的快捷菜单按钮（三个点）；仅本插件文档显示。
+--- 阅读界面左上角的快捷菜单按钮（三个点）；仅本插件文档显示。
 -- 参考 bookshelf 插件做法：显示挂到阅读视图模块（随页面绘制，不是浮层、不碰事件派发）；
 -- 点击另注册为阅读器触摸区（overrides 盖过同位置的翻页/高亮/菜单/书签角等区域）。
 -- 视图模块必须在首帧绘制前注册（ReaderReady 同步调用）：注册晚了按钮要等下一次
@@ -665,11 +781,12 @@ function TechNews:showQuickMenuButton()
     end
     local dots = TextWidget:new{
         text = "…",
-        face = Font:getFace("cfont", 22),
+        face = Font:getFace("cfont", 34),
     }
     local dots_size = dots:getSize()
-    local x, y = sw - dots_size.w - margin, top_offset + margin
-    local area = math.max(dots_size.w, dots_size.h) + Screen:scaleBySize(16) -- 点击区比点大一圈
+    -- 左上角（右上角被书签手势占用）；点击区放大，便于点按
+    local x, y = margin, top_offset + margin
+    local area = math.max(dots_size.w, dots_size.h) + Screen:scaleBySize(20) -- 点击区比点大一圈
     self._quick_button = {
         paintTo = function(_, bb)
             dots:paintTo(bb, x, y)
@@ -681,7 +798,7 @@ function TechNews:showQuickMenuButton()
         id = "technews_quickmenu_tap",
         ges = "tap",
         screen_zone = {
-            ratio_x = (sw - area - margin) / sw, ratio_y = (top_offset + margin) / sh,
+            ratio_x = margin / sw, ratio_y = (top_offset + margin) / sh,
             ratio_w = area / sw, ratio_h = area / sh,
         },
         overrides = QUICK_ZONE_OVERRIDES,
@@ -732,13 +849,9 @@ end
 
 --- 抓取一个源。必须在 Trapper:wrap 协程内调用。
 -- @return { items = {...}, images = { [url]= {data=, ext=} } } 或 (nil, 错误)
-function TechNews:fetchSource(source, limit, progress)
-    -- 合并模式下显示来源进度前缀（单源时为空串）
-    local prefix = ""
-    if progress and progress.source_count and progress.source_count > 1 then
-        prefix = string.format("来源 %d/%d · ",
-            progress.source_index, progress.source_count)
-    end
+--- RSS 源的抓取与内容块组装；返回条目数组，或 nil 与错误原因。
+-- range 为空时按严格今日窗口；否则按给定半开区间过滤（分源阅读的昨日/近一周/指定日）。
+local function fetch_rss_items(source, max_items, prefix, range)
     local xml, err = http.get(source.feed)
     if not xml then
         return nil, err
@@ -747,19 +860,20 @@ function TechNews:fetchSource(source, limit, progress)
     if #items == 0 then
         return nil, "没有解析到条目"
     end
-    -- 今日窗口：严格本地 0 点起（不回补旧条目）
-    local result, n_today = window.filter(items, limit or source.max_items)
-    if #result == 0 then
-        return nil, "今日暂无新条目"
+    local result, n_range
+    if range then
+        result, n_range = window.filter_range(items, max_items,
+            range.start_ts, range.end_ts, range.include_no_ts)
+    else
+        result, n_range = window.filter(items, max_items)
     end
     logger.info("technews window:",
         source.id,
-        "today=" .. tostring(n_today),
+        "in_range=" .. tostring(n_range),
         "selected=" .. tostring(#result),
         "feed=" .. tostring(#items))
-    for _, item in ipairs(result) do
-        item.source_id = source.id
-        item.source_name = source.name
+    if #result == 0 then
+        return {}
     end
 
     -- 1) 组装内容块（文字 + 图片，保持顺序）
@@ -795,6 +909,36 @@ function TechNews:fetchSource(source, limit, progress)
             end
             item.blocks = blocks
         end
+    end
+    return result
+end
+
+function TechNews:fetchSource(source, limit, progress, range)
+    -- 合并模式下显示来源进度前缀（单源时为空串）
+    local prefix = ""
+    if progress and progress.source_count and progress.source_count > 1 then
+        prefix = string.format("来源 %d/%d · ",
+            progress.source_index, progress.source_count)
+    end
+    local max_items = limit or source.max_items
+    local result, err
+    if source.fetch then
+        -- 自定义抓取源（如知乎日报 API）：适配器按时间范围直接产出条目（含内容块）
+        result, err = source.fetch(self, {
+            range = range, limit = max_items, prefix = prefix,
+        })
+    else
+        result, err = fetch_rss_items(source, max_items, prefix, range)
+    end
+    if not result then
+        return nil, err
+    end
+    if #result == 0 then
+        return nil, (range and range.empty) or "今日暂无新条目"
+    end
+    for _, item in ipairs(result) do
+        item.source_id = source.id
+        item.source_name = source.name
     end
 
     -- 2) 下载图片（可关闭；按整期总量设上限，单条不限）
@@ -1135,28 +1279,35 @@ function TechNews:showCancelled()
     end)
 end
 
---- 打开单个源的今日资讯（缓存优先）
-function TechNews:openIssue(source_id)
-    local source = source_by_id(source_id)
-    if not source then return end
-    local date = today_str()
-    if storage:epub_exists(source.id, date) then
-        self:openEpub(storage:epub_path(source.id, date))
+--- 打开单个源在指定时间范围的资讯（分源阅读：今日 / 昨日 / 近一周 / 指定日期）。
+-- 缓存键：今日与昨日/指定日期为 <id>-<刊期日>.epub，近一周为 <id>-week-<今日>.epub；
+-- 命中缓存直接打开，不再抓取。
+function TechNews:openIssueRange(source, kind, date)
+    local range, why = issue_range(kind, date)
+    if not range then
+        UIManager:scheduleIn(0.1, function()
+            UIManager:show(InfoMessage:new{ text = why or "无效的日期", timeout = 2 })
+        end)
+        return
+    end
+    local issue_id = source.id .. range.suffix
+    if storage:epub_exists(issue_id, range.date) then
+        self:openEpub(storage:epub_path(issue_id, range.date))
         return
     end
     Trapper:wrap(function()
-        local bundle, err = self:fetchSource(source)
+        local bundle, err = self:fetchSource(source, source.max_items, nil, range)
         if not bundle then
             Trapper:clear()
             if err == "已取消" then
                 self:showCancelled()
                 return
             end
-            self:showFetchError(err, function() self:openIssue(source_id) end)
+            self:showFetchError(err, function() self:openIssueRange(source, kind, date) end)
             return
         end
-        local title = string.format("%s · %s", source.name, date)
-        self:buildAndOpen(source.id, title, date, bundle.items, bundle.images)
+        local title = string.format("%s · %s", source.name, range.title)
+        self:buildAndOpen(issue_id, title, range.date, bundle.items, bundle.images)
         -- 结束立即收起进度消息（Trapper 不会自动关闭，需显式 clear；KOReader 惯例）
         Trapper:clear()
     end)
@@ -1240,7 +1391,7 @@ function TechNews:openMergedIssue()
                 pair.a.title, "|", pair.b.title, "|",
                 ("%.2f"):format(pair.similarity))
         end
-        local title = "今日科技资讯 · " .. date
+        local title = "知否 · " .. date
         self:buildAndOpen("merged", title, date, kept, all_images)
         Trapper:clear()
     end)

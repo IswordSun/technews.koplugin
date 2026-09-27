@@ -230,7 +230,7 @@ end
 
 --- 构建一期 EPUB（含图片块）。
 -- data = {
---   title = "科技资讯 · 2026-09-16",
+--   title = "知否 · 2026-09-16",
 --   date  = "2026-09-16",
 --   items = { { title=, source_name=, time=, summary=, blocks=, images=, link= }, ... },
 -- }
@@ -240,7 +240,7 @@ function Epub.build(data, output_path)
     local date = assert(data and data.date, "missing issue date")
     local items = assert(data.items, "missing items")
     assert(#items > 0, "empty items")
-    local title = data.title or ("科技资讯 · " .. date)
+    local title = data.title or ("知否 · " .. date)
     local identifier = "technews-" .. date
     local toc = {}
     local chapters = {}

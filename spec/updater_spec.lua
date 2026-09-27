@@ -16,6 +16,7 @@ package.preload["socket"] = function()
     return { skip = function() end, sleep = function() end }
 end
 package.preload["ssl.https"] = function() return { request = function() end } end
+package.preload["socket.http"] = function() return { request = function() end } end
 package.preload["socketutil"] = function() return {} end
 package.preload["logger"] = function()
     return {

@@ -29,6 +29,7 @@ package.preload["dump"] = function() return function() return "" end end
 package.preload["ltn12"] = function() return {} end
 package.preload["socket"] = function() return { sleep = function() end } end
 package.preload["ssl.https"] = function() return {} end
+package.preload["socket.http"] = function() return {} end
 package.preload["socketutil"] = function() return {} end
 package.path = plugin_dir .. "/?.lua;" .. package.path
 local favorites = require("technews.favorites")
