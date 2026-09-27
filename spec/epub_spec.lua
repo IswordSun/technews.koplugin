@@ -126,13 +126,13 @@ do
     local expected_map = table.concat({
         '<navPoint id="nav-1" playOrder="1"><navLabel><text>本期目录</text></navLabel>'
             .. '<content src="text/cover.xhtml"/></navPoint>',
-        '<navPoint id="nav-2" playOrder="2"><navLabel><text>甲一</text></navLabel>'
+        '<navPoint id="nav-2" playOrder="2"><navLabel><text>【IT之家】甲一</text></navLabel>'
             .. '<content src="text/article-001.xhtml"/></navPoint>',
-        '<navPoint id="nav-3" playOrder="3"><navLabel><text>乙一</text></navLabel>'
+        '<navPoint id="nav-3" playOrder="3"><navLabel><text>【CNBeta】乙一</text></navLabel>'
             .. '<content src="text/article-002.xhtml"/></navPoint>',
-        '<navPoint id="nav-4" playOrder="4"><navLabel><text>甲二</text></navLabel>'
+        '<navPoint id="nav-4" playOrder="4"><navLabel><text>【IT之家】甲二</text></navLabel>'
             .. '<content src="text/article-003.xhtml"/></navPoint>',
-        '<navPoint id="nav-5" playOrder="5"><navLabel><text>乙二</text></navLabel>'
+        '<navPoint id="nav-5" playOrder="5"><navLabel><text>【CNBeta】乙二</text></navLabel>'
             .. '<content src="text/article-004.xhtml"/></navPoint>',
         '<navPoint id="nav-6" playOrder="6"><navLabel><text>丙一</text></navLabel>'
             .. '<content src="text/article-005.xhtml"/></navPoint>',
@@ -170,9 +170,9 @@ do
     local expected_nav = table.concat({
         "<ol>",
         '<li><a href="text/cover.xhtml">本期目录</a></li>',
-        '<li><a href="text/article-001.xhtml">甲一</a></li>',
-        '<li><a href="text/article-002.xhtml">甲二</a></li>',
-        '<li><a href="text/article-003.xhtml">甲三</a></li>',
+        '<li><a href="text/article-001.xhtml">【IT之家】甲一</a></li>',
+        '<li><a href="text/article-002.xhtml">【IT之家】甲二</a></li>',
+        '<li><a href="text/article-003.xhtml">【IT之家】甲三</a></li>',
         "</ol>",
     }, "\n")
     eq(block_of(single_epub, "<ol>", "</ol>"), expected_nav,
@@ -181,11 +181,11 @@ do
     local expected_map = table.concat({
         '<navPoint id="nav-1" playOrder="1"><navLabel><text>本期目录</text></navLabel>'
             .. '<content src="text/cover.xhtml"/></navPoint>',
-        '<navPoint id="nav-2" playOrder="2"><navLabel><text>甲一</text></navLabel>'
+        '<navPoint id="nav-2" playOrder="2"><navLabel><text>【IT之家】甲一</text></navLabel>'
             .. '<content src="text/article-001.xhtml"/></navPoint>',
-        '<navPoint id="nav-3" playOrder="3"><navLabel><text>甲二</text></navLabel>'
+        '<navPoint id="nav-3" playOrder="3"><navLabel><text>【IT之家】甲二</text></navLabel>'
             .. '<content src="text/article-002.xhtml"/></navPoint>',
-        '<navPoint id="nav-4" playOrder="4"><navLabel><text>甲三</text></navLabel>'
+        '<navPoint id="nav-4" playOrder="4"><navLabel><text>【IT之家】甲三</text></navLabel>'
             .. '<content src="text/article-003.xhtml"/></navPoint>',
     }, "\n")
     eq(block_of(single_epub, "<navMap>", "</navMap>"),
@@ -214,7 +214,7 @@ do
     ok(pos(flat_epub, "<span>") == nil,
         "单来源+无来源混排：非 nil 来源仅 1 个，nav 保持平铺")
     contains(flat_epub,
-        '<navPoint id="nav-2" playOrder="2"><navLabel><text>甲一</text></navLabel>'
+        '<navPoint id="nav-2" playOrder="2"><navLabel><text>【IT之家】甲一</text></navLabel>'
             .. '<content src="text/article-001.xhtml"/></navPoint>',
         "单来源+无来源混排：ncx 条目仍为平铺 navPoint")
     local flat_map = block_of(flat_epub, "<navMap>", "</navMap>")
@@ -278,8 +278,8 @@ do
     contains(snapshot_epub, '<itemref idref="ch1"/>', "快照模式：spine 首项即正文（ch1）")
     contains(snapshot_epub, "收藏正文", "快照模式：正文内容仍在")
     contains(snapshot_epub, "OEBPS/images/img-001.jpg", "快照模式：正文图片照常注入")
-    contains(snapshot_epub, '<li><a href="text/article-001.xhtml">某篇收藏文章</a></li>',
-        "快照模式：nav 仅列文章本身")
+    contains(snapshot_epub, '<li><a href="text/article-001.xhtml">【Solidot】某篇收藏文章</a></li>',
+        "快照模式：nav 仅列文章本身（带来源标记）")
     ok(pos(snapshot_epub, "本期目录") == nil, "快照模式：无「本期目录」条目")
 end
 
@@ -320,7 +320,7 @@ do
     contains(digest_epub, '<h3 id="h1">曝 A 量产良率仅六成</h3>', "小标题正文带锚点（h1）")
     contains(digest_epub, '<h3 id="h2">曝 B 筹备新一轮融资</h3>', "小标题正文带锚点（h2）")
     contains(digest_epub,
-        '<li><a href="text/article-001.xhtml">早报｜示例</a><ol>',
+        '<li><a href="text/article-001.xhtml">【爱范儿】早报｜示例</a><ol>',
         "nav：早报条目内嵌子目录 <ol>")
     contains(digest_epub,
         '<li><a href="text/article-001.xhtml#h1">曝 A 量产良率仅六成</a></li>',
@@ -331,7 +331,7 @@ do
         "ncx：子 navPoint 指向 h2 锚点")
     contains(digest_epub, '<meta name="dtb:depth" content="2"/>',
         "ncx：深度随子目录加一级（文章→小标题）")
-    contains(digest_epub, '<li><a href="text/article-002.xhtml">单标题文章</a></li>',
+    contains(digest_epub, '<li><a href="text/article-002.xhtml">【IT之家】单标题文章</a></li>',
         "单条小标题不建子目录（条目平铺）")
     contains(digest_epub, "<h3>唯一小标题</h3>", "单条小标题正文无锚点（与从前一致）")
     ok(pos(digest_epub, "article-002.xhtml#") == nil, "单标题文章无任何锚点目录项")

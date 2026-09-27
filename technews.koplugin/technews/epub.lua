@@ -155,9 +155,18 @@ local function is_digest_title(title)
     return false
 end
 
+-- 目录条目标题：带来源标记（【来源】标题），便于在跳转目录里区分来源；
+-- 无来源的条目（如「本期目录」）原样返回
+local function toc_label(entry)
+    if entry.source and entry.source ~= "" then
+        return "【" .. entry.source .. "】" .. entry.title
+    end
+    return entry.title
+end
+
 -- 目录项 → nav 的 <li>；带 subs（文内小标题）时内嵌一层锚点 <ol>
 local function nav_li(entry)
-    local link = '<a href="text/' .. entry.href .. '">' .. escape(entry.title) .. "</a>"
+    local link = '<a href="text/' .. entry.href .. '">' .. escape(toc_label(entry)) .. "</a>"
     if not entry.subs then
         return "<li>" .. link .. "</li>"
     end
@@ -196,13 +205,13 @@ local function build_ncx(toc, identifier, title)
     -- 目录项 → navPoint；带 subs（文内小标题）时内嵌一层锚点子节点
     local function entry_point(entry)
         if not entry.subs then
-            return point_head(entry.title, entry.href) .. "</navPoint>"
+            return point_head(toc_label(entry), entry.href) .. "</navPoint>"
         end
         local children = {}
         for _, sub in ipairs(entry.subs) do
             children[#children + 1] = point_head(sub.title, entry.href, sub.anchor) .. "</navPoint>"
         end
-        return point_head(entry.title, entry.href)
+        return point_head(toc_label(entry), entry.href)
             .. "\n" .. table.concat(children, "\n") .. "\n</navPoint>"
     end
     local depth = 1
@@ -343,6 +352,7 @@ function Epub.build(data, output_path)
         end
         toc[#toc + 1] = {
             title = item_title, href = href,
+            source = item.source_name,
             subs = with_subs and subs or nil,
         }
         chapters[#chapters + 1] = {
