@@ -314,6 +314,12 @@ function TechNews:getHomeItems()
             callback = function() self:confirmRefetch() end,
         },
         {
+            text = "分源阅读",
+            sub_item_table_func = function()
+                return self:getSourceReadItems()
+            end,
+        },
+        {
             text = "我的收藏",
             sub_item_table_func = function()
                 return self:getFavoriteItems()
@@ -323,12 +329,6 @@ function TechNews:getHomeItems()
             text = "往期缓存",
             sub_item_table_func = function()
                 return self:getHistoryItems()
-            end,
-        },
-        {
-            text = "分源阅读",
-            sub_item_table_func = function()
-                return self:getSourceReadItems()
             end,
         },
         {
