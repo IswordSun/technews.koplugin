@@ -64,6 +64,38 @@ local function list_stories(ymd)
     return data.stories or {}
 end
 
+--- 只取 <div class="content"> 容器内的正文（参考参考插件 zhihudaily.koplugin 的解析思路：
+-- 作者条（含 <img class="avatar"> 头像）、空占位、隐藏的"查看知乎原文"等都在容器外，
+-- 用容器切片而非逐块过滤更稳）。其注释称实测 content 内无嵌套 div，故首个
+-- </div> 即容器结束；可能出现多个 content 段（问答结构），按序拼接。
+-- 未找到容器（结构变化）时返回 nil，由调用方兜底整段处理。
+local function content_only(body)
+    local parts = {}
+    local pos = 1
+    while true do
+        local s, e = body:find('<div class="content">', pos, true)
+        if not s then break end
+        local _, close = body:find("</div>", e + 1, true)
+        if not close then break end
+        parts[#parts + 1] = body:sub(e + 1, close - 6)
+        pos = close + 1
+    end
+    if #parts == 0 then
+        return nil
+    end
+    return table.concat(parts, "\n")
+end
+
+--- 作者行（作者名+简介）取自作者条；拿不到返回 nil。
+local function author_of(body)
+    local meta = body:match('<div class="meta">(.-)</div>')
+    if not meta then return nil end
+    local name = meta:match('<span class="author">(.-)</span>')
+    if not name then return nil end
+    local bio = meta:match('<span class="bio">(.-)</span>')
+    return name .. (bio or "")
+end
+
 --- 自定义抓取入口（fetchSource 调用）：按时间范围产出条目（含内容块）。
 function adapter.fetch(_, opts)
     local range = opts.range
@@ -118,7 +150,14 @@ function adapter.fetch(_, opts)
         if not data then
             return nil, err
         end
-        local blocks = htmltext.blocks(data.body or "", nil)
+        -- 正文只取 content 容器（作者头像等在容器外，天然排除）；
+        -- 作者名+简介单独提取，作为一条图注放在开头
+        local raw = data.body or ""
+        local blocks = htmltext.blocks(content_only(raw) or raw, nil)
+        local author = author_of(raw)
+        if author then
+            table.insert(blocks, 1, { text = author, kind = "caption" })
+        end
         if #blocks == 0 then
             blocks = { { text = s.title or "" } }
         end
