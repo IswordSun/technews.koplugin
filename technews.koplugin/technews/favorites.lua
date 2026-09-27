@@ -144,6 +144,27 @@ function favorites.section_index(item, title)
     return nil
 end
 
+--- 在条目表里按目录标题定位（快捷菜单/收藏用）。
+-- 目录条目标题可能带「【来源】」前缀（epub.lua 的 toc_label），而 sidecar 里存的是
+-- 纯标题；两种形式都参与比对（先原始、后去前缀，避免误伤本身以【开头的标题）。
+-- 命中文内小标题（二级目录条目）时附带小节序号。
+-- @return item[, section_index]；无匹配返回 nil
+function favorites.locate(items, title)
+    if not title or title == "" then return nil end
+    local plain = title:gsub("^【.-】", "")
+    for _, item in ipairs(items or {}) do
+        if item.title == title or item.title == plain then
+            return item
+        end
+        local index = favorites.section_index(item, title)
+            or favorites.section_index(item, plain)
+        if index then
+            return item, index
+        end
+    end
+    return nil
+end
+
 --- 按小节序号切出子文章：标题 = 小标题文本；blocks = 该小标题之后、下一个小标题之前。
 -- 返回值可直接交给 favorites.add（link/source_name 继承整篇）。
 function favorites.section_article(item, index)

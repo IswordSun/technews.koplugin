@@ -93,6 +93,36 @@ do
 end
 
 ----------------------------------------------------------------------
+-- locate：按目录标题定位（带【来源】前缀与纯标题两种形式）
+----------------------------------------------------------------------
+
+do
+    local items = { item, { title = "另一篇", blocks = { { text = "正文" } } } }
+
+    local a = favorites.locate(items, "早报｜示例")
+    ok(a == item, "locate：纯标题直接命中")
+
+    local b = favorites.locate(items, "【爱范儿】早报｜示例")
+    ok(b == item, "locate：带来源前缀命中整篇")
+
+    local c, c_idx = favorites.locate(items, "【爱范儿】早报｜示例")
+    ok(c == item and c_idx == nil, "locate：整篇命中时无小节序号")
+
+    local d, d_idx = favorites.locate(items, "条目二标题")
+    ok(d == item and d_idx == 2, "locate：小标题命中并给小节序号")
+
+    local e, e_idx = favorites.locate(items, "【IT之家】条目二标题")
+    ok(e == item and e_idx == 2, "locate：小标题带前缀也命中")
+
+    ok(favorites.locate(items, "不存在的标题") == nil, "locate：无匹配返回 nil")
+    ok(favorites.locate(items, "") == nil, "locate：空标题返回 nil")
+    ok(favorites.locate(nil, "早报｜示例") == nil, "locate：条目表缺失返回 nil")
+
+    local bracket = favorites.locate({ { title = "【视频】某某", blocks = {} } }, "【视频】某某")
+    eq(bracket and bracket.title, "【视频】某某", "locate：本身以【开头的标题原样命中")
+end
+
+----------------------------------------------------------------------
 -- section_article：切出子文章（标题 / 继承字段 / 段落范围）
 ----------------------------------------------------------------------
 

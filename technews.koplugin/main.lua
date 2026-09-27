@@ -1091,15 +1091,11 @@ function TechNews:currentIssueArticle()
             and toc_reader:getTocTitleOfCurrentPage()
     end
     if not title or title == "" then return nil end
-    for _, item in ipairs(meta.items) do
-        if item.title == title then
-            return item, issue_path
-        end
-        -- 标题命中某条目的文内小标题（二级目录条目）→ 返回该条目与小节序号
-        local section_index = favorites.section_index(item, title)
-        if section_index then
-            return item, issue_path, section_index
-        end
+    -- 目录标题可能带来源前缀（【来源】标题，见 epub.lua 的 toc_label）；
+    -- 由 favorites.locate 以「原始/去前缀」两种形式定位
+    local item, section_index = favorites.locate(meta.items, title)
+    if item then
+        return item, issue_path, section_index
     end
     return nil
 end
