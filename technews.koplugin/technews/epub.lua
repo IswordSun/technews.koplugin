@@ -297,7 +297,7 @@ function Epub.build(data, output_path)
     end
 
     local overview = {
-        "<p class=\"kicker\">TECH NEWS · DAILY</p>",
+        "<p class=\"kicker\">知否 · 每日</p>",
         "<h1>" .. escape(title) .. "</h1>",
         "<p class=\"meta\">" .. #items .. " 条资讯 · 可从 KOReader 目录跳转</p>",
         "<ol>",

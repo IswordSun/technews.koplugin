@@ -51,4 +51,9 @@ return {
     require("technews.sources.one"),
     require("technews.sources.readhub"),
     require("technews.sources.sixty"),
+
+    -- 小而美（2026-09-27 二轮调研）：体量小、内容精选
+    -- （读诗 ≈1 篇/天全文 RSS；触乐 ≈2 篇/天游戏文化长文）
+    require("technews.sources.bedtimepoem"),
+    require("technews.sources.chuapp"),
 }
