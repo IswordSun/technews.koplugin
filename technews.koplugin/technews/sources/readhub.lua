@@ -76,14 +76,20 @@ function adapter.fetch(_, opts)
                 return nil, err
             end
             if #days == 1 then
-                return {}, err -- 单日：无内容走"空结果"提示，出错交给调用方
+                if err then
+                    return nil, err -- 真错误（网络/解析）：上报并允许重试
+                end
+                return {} -- 当天确实没有内容 → 走"空结果"提示
             end
         elseif #blocks > 0 then
-            local _, m, d = iso:match("^(%d+)%-(%d+)%-(%d+)$")
+            local y, m, d = iso:match("^(%d+)%-(%d+)%-(%d+)$")
             items[#items + 1] = {
                 title = string.format("Readhub 早报 · %d月%d日", tonumber(m), tonumber(d)),
                 link = BASE .. iso,
                 time = string.format("%d月%d日", tonumber(m), tonumber(d)),
+                -- ts 仅供合并期按时间排序（自定义源不做窗口过滤）
+                ts = os.time{ year = tonumber(y), month = tonumber(m),
+                    day = tonumber(d), hour = 12 },
                 blocks = blocks,
             }
         end

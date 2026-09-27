@@ -120,6 +120,26 @@ do
 
     local bracket = favorites.locate({ { title = "【视频】某某", blocks = {} } }, "【视频】某某")
     eq(bracket and bracket.title, "【视频】某某", "locate：本身以【开头的标题原样命中")
+
+    -- 整篇标题优先：另一篇的小标题名恰等于某篇标题时，不应被抢先
+    local ambiguous = {
+        { title = "共享小节", blocks = { { text = "正文" } } },
+        { title = "另一篇", blocks = {
+            { text = "共享小节", kind = "heading" }, { text = "正文" },
+        } },
+    }
+    ok(favorites.locate(ambiguous, "共享小节") == ambiguous[1],
+        "locate：整篇标题优先于其它篇的小标题")
+
+    -- 两篇共用同一小标题名 → 不猜（返回 nil，避免把别篇存成收藏）
+    local shared = {
+        { title = "甲篇", blocks = { { text = "同一小节", kind = "heading" }, { text = "甲正文" } } },
+        { title = "乙篇", blocks = { { text = "同一小节", kind = "heading" }, { text = "乙正文" } } },
+    }
+    ok(favorites.locate(shared, "同一小节") == nil,
+        "locate：多篇共用小标题名时不猜（返回 nil）")
+    ok(favorites.locate(shared, "甲篇") == shared[1],
+        "locate：共用小标题名时整篇标题仍可命中")
 end
 
 ----------------------------------------------------------------------

@@ -96,6 +96,7 @@ local function issue_range(kind, date)
         local y, m, d = date:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)$")
         if not y then return nil, "无效的日期" end
         local start_ts = os.time{ year = y, month = m, day = d, hour = 0 }
+        if not start_ts then return nil, "无效的日期" end
         if start_ts >= window.day_start_ts(0) + 86400 then
             return nil, "这个日期还没到"
         end
@@ -515,7 +516,7 @@ function TechNews:getFavoriteItems()
         if entry.file then
             items[#items + 1] = {
                 text = string.format("%s · %s", entry.title,
-                    os.date("%m-%d", entry.favorited_at or 0)),
+                    os.date("%m-%d", tonumber(entry.favorited_at) or 0)),
                 callback = function()
                     self:openEpub(entry.file)
                 end,
@@ -543,6 +544,9 @@ function TechNews:getHistoryItems()
         -- 日期倒序；同一天里合并期在前（更完整），其余按 id 排
         table.sort(entries, function(a, b)
             if a.date ~= b.date then return a.date > b.date end
+            if a.id == "merged" or b.id == "merged" then
+                return a.id == "merged" -- 同一天里合并期在前（更完整）
+            end
             return a.id < b.id
         end)
         for _, entry in ipairs(entries) do
@@ -576,7 +580,7 @@ function TechNews:getFavoriteManageItems()
     for _, entry in ipairs(favorites.load()) do
         items[#items + 1] = {
             text = string.format("%s · %s", entry.title,
-                os.date("%m-%d", entry.favorited_at or 0)),
+                os.date("%m-%d", tonumber(entry.favorited_at) or 0)),
             keep_menu_open = true,
             callback = function()
                 UIManager:show(ConfirmBox:new{

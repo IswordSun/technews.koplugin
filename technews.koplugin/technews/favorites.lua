@@ -148,19 +148,32 @@ end
 -- 目录条目标题可能带「【来源】」前缀（epub.lua 的 toc_label），而 sidecar 里存的是
 -- 纯标题；两种形式都参与比对（先原始、后去前缀，避免误伤本身以【开头的标题）。
 -- 命中文内小标题（二级目录条目）时附带小节序号。
--- @return item[, section_index]；无匹配返回 nil
+-- @return item[, section_index]；无匹配或无法消歧时返回 nil
 function favorites.locate(items, title)
     if not title or title == "" then return nil end
+    local list = items or {}
     local plain = title:gsub("^【.-】", "")
-    for _, item in ipairs(items or {}) do
+    -- 第一遍：整篇标题精确命中优先（否则「某篇的标题恰是另一篇的小标题」会被抢先）
+    for _, item in ipairs(list) do
         if item.title == title or item.title == plain then
             return item
         end
+    end
+    -- 第二遍：小标题命中；若多篇共用同一小标题名则不猜（宁可隐藏收藏，
+    -- 也不要把别的小节存成收藏）
+    local found, found_index, matches
+    for _, item in ipairs(list) do
         local index = favorites.section_index(item, title)
             or favorites.section_index(item, plain)
         if index then
-            return item, index
+            matches = (matches or 0) + 1
+            if not found then
+                found, found_index = item, index
+            end
         end
+    end
+    if matches == 1 then
+        return found, found_index
     end
     return nil
 end

@@ -406,7 +406,7 @@ function Epub.build(data, output_path)
 <package xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" version="3.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
 <dc:identifier id="bookid">]] .. escape(identifier) .. "</dc:identifier><dc:title>" .. escape(title) .. [[</dc:title>
 <dc:creator>Isword</dc:creator><dc:language>zh-CN</dc:language><dc:date>]] .. escape(date) .. [[</dc:date>
-]] .. (cover and '<meta name="cover" content="cover-image"/>' or "") .. [[
+]] .. (cover and cover.data and '<meta name="cover" content="cover-image"/>' or "") .. [[
 </metadata><manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/><item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/><item id="style" href="style.css" media-type="text/css"/>
 ]] .. table.concat(manifest, "\n") .. "</manifest><spine toc=\"ncx\">" .. table.concat(spine, "\n") .. "</spine></package>" }
 

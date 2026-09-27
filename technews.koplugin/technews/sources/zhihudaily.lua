@@ -161,11 +161,14 @@ function adapter.fetch(_, opts)
         if #blocks == 0 then
             blocks = { { text = s.title or "" } }
         end
-        local _, m, d = s._day:match("^(%d%d%d%d)(%d%d)(%d%d)$")
+        local y, m, d = s._day:match("^(%d%d%d%d)(%d%d)(%d%d)$")
         items[#items + 1] = {
             title = s.title,
             link = s.url or ("https://daily.zhihu.com/story/" .. tostring(s.id)),
             time = string.format("%d月%d日", tonumber(m), tonumber(d)),
+            -- ts 仅供合并期按时间排序（自定义源不做窗口过滤）
+            ts = os.time{ year = tonumber(y), month = tonumber(m),
+                day = tonumber(d), hour = 12 },
             blocks = blocks,
         }
         if i < #stories then

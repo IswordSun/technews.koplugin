@@ -40,10 +40,11 @@ local function fetch_day(iso, prefix)
     if not ok2 or type(data) ~= "table" then
         return nil, "解析失败（JSON）"
     end
-    if tonumber(data.code) ~= 200 then
+    if tonumber(data.code or 200) ~= 200 then
         return nil, "接口返回异常（code=" .. tostring(data.code) .. "）"
     end
-    local news = (data.data or {}).news or {}
+    local payload = data.data
+    local news = (type(payload) == "table" and payload.news) or {}
     if #news == 0 then
         return nil
     end
@@ -77,14 +78,20 @@ function adapter.fetch(_, opts)
                 return nil, err
             end
             if #days == 1 then
-                return {}, err -- 单日：无内容走"空结果"提示，出错交给调用方
+                if err then
+                    return nil, err -- 真错误（网络/解析）：上报并允许重试
+                end
+                return {} -- 当天确实没有内容 → 走"空结果"提示
             end
         elseif #blocks > 0 then
-            local _, m, d = iso:match("^(%d+)%-(%d+)%-(%d+)$")
+            local y, m, d = iso:match("^(%d+)%-(%d+)%-(%d+)$")
             items[#items + 1] = {
                 title = string.format("每天60秒读懂世界 · %d月%d日", tonumber(m), tonumber(d)),
                 link = "https://60s.viki.moe/",
                 time = string.format("%d月%d日", tonumber(m), tonumber(d)),
+                -- ts 仅供合并期按时间排序（自定义源不做窗口过滤）
+                ts = os.time{ year = tonumber(y), month = tonumber(m),
+                    day = tonumber(d), hour = 12 },
                 blocks = blocks,
             }
         end

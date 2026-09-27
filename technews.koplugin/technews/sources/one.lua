@@ -35,7 +35,7 @@ local function get_json(path)
     if not ok2 or type(decoded) ~= "table" then
         return nil, "解析失败（JSON）"
     end
-    if decoded.res ~= 0 then
+    if decoded.res and decoded.res ~= 0 then
         return nil, "接口返回异常（res=" .. tostring(decoded.res) .. "）"
     end
     if decoded.data == nil then
@@ -59,7 +59,11 @@ local function find_group(target_iso, diff_from_today)
         if type(data) ~= "table" or #data == 0 then
             return nil
         end
-        local first, last = data[1].date, data[#data].date
+        local first = data[1] and data[1].date
+        local last = data[#data] and data[#data].date
+        if type(first) ~= "string" or type(last) ~= "string" then
+            return nil -- 响应结构变化：放弃本次（Trapper 捕获会静默中断并卡住进度框）
+        end
         if last <= target_iso and target_iso <= first then
             for _, group in ipairs(data) do
                 if group.date == target_iso then
@@ -208,11 +212,14 @@ function adapter.fetch(_, opts)
                 return nil, err or "抓取失败"
             end
         elseif #blocks > 0 then
-            local _, m, d = target.iso:match("^(%d+)%-(%d+)%-(%d+)$")
+            local y, m, d = target.iso:match("^(%d+)%-(%d+)%-(%d+)$")
             items[#items + 1] = {
                 title = title or ("「一个」 · " .. tonumber(m) .. "月" .. tonumber(d) .. "日"),
                 link = "https://wufazhuce.com/",
                 time = string.format("%d月%d日", tonumber(m), tonumber(d)),
+                -- ts 仅供合并期按时间排序（自定义源不做窗口过滤）
+                ts = os.time{ year = tonumber(y), month = tonumber(m),
+                    day = tonumber(d), hour = 12 },
                 summary = quote,
                 blocks = blocks,
             }
