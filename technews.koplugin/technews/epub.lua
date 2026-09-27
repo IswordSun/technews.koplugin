@@ -1,6 +1,6 @@
 -- technews/epub.lua — 将一期资讯构造成 EPUB（KOReader 原生阅读器打开）
 --
--- 最小 EPUB 3 实现：封面目录页 + 每条资讯一个章节。
+-- 最小 EPUB 3 实现：目录/概览页 + 每条资讯一个章节（无封面图片页；仅保留元数据封面供书架缩略图）。
 -- ZIP 写入 + CRC32 参考 readhubdaily（已通过 unzip -t / xmllint 验证）。
 
 local bit = require("bit")
@@ -118,8 +118,6 @@ a { color: #222; text-decoration: none; }
 span.src { color: #666; font-size: 0.85em; }
 div.img { text-align: center; margin: 0.6em 0 1em; }
 div.img img { max-width: 100%; }
-div.cover { text-align: center; margin: 0; padding: 0; }
-div.cover img { max-width: 100%; max-height: 100%; }
 ]]
 
 local EXT_MEDIA = {
@@ -129,14 +127,6 @@ local EXT_MEDIA = {
 
 local function media_type(ext)
     return EXT_MEDIA[ext] or "image/jpeg"
-end
-
-local function coverpage_xhtml(image_href)
-    return [[<?xml version="1.0" encoding="utf-8"?>
-<!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" lang="zh-CN">
-<head><title>封面</title><link rel="stylesheet" type="text/css" href="../style.css"/></head>
-<body><div class="cover"><img src="../images/]] .. image_href .. [[" alt="封面"/></div></body></html>]]
 end
 
 local function xhtml(title, body)
@@ -389,7 +379,8 @@ function Epub.build(data, output_path)
         entries[#entries + 1] = image
     end
 
-    -- 封面：图片 + 封面页（spine 第一位），并声明 EPUB 封面属性
+    -- 封面：只留元数据封面（书架缩略图用），不生成封面页——打开即目录/概览页
+    -- （2026-09-27 按用户要求去掉目录页前的封面图页）
     if cover and cover.data then
         local ext = cover.ext or "jpg"
         local cover_name = "cover." .. ext
@@ -397,15 +388,9 @@ function Epub.build(data, output_path)
             name = "OEBPS/images/" .. cover_name,
             data = cover.data,
         }
-        entries[#entries + 1] = {
-            name = "OEBPS/text/coverpage.xhtml",
-            data = coverpage_xhtml(cover_name),
-        }
         manifest[#manifest + 1] = '<item id="cover-image" href="images/'
             .. cover_name .. '" media-type="' .. media_type(ext)
             .. '" properties="cover-image"/>'
-        manifest[#manifest + 1] = '<item id="coverpage" href="text/coverpage.xhtml" media-type="application/xhtml+xml"/>'
-        table.insert(spine, 1, '<itemref idref="coverpage"/>')
     end
     entries[#entries + 1] = { name = "OEBPS/content.opf", data = [[<?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" version="3.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/">

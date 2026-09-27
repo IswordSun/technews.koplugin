@@ -352,6 +352,33 @@ else
     print("     # skip - 环境中没有 unzip")
 end
 
+----------------------------------------------------------------------
+-- 样本七：普通期带图 —— 无封面图片页（打开即目录页），保留元数据封面
+----------------------------------------------------------------------
+
+local no_coverpage = {
+    title = "知否 · 2026-09-27",
+    date = "2026-09-27",
+    items = {
+        { title = "带图文章", source_name = "IT之家", time = "9月27日", blocks = {
+            { text = "正文。" },
+            { img = "https://example.com/a.jpg" },
+        } },
+    },
+    images = { ["https://example.com/a.jpg"] = { data = "JPEGDATA", ext = "jpg" } },
+}
+
+local no_coverpage_epub = build_and_read(no_coverpage)
+
+do
+    ok(pos(no_coverpage_epub, "coverpage.xhtml") == nil, "普通期：无封面图片页")
+    ok(pos(no_coverpage_epub, '<itemref idref="coverpage"/>') == nil, "普通期：spine 无封面页引用")
+    contains(no_coverpage_epub, "images/cover.jpg", "普通期：保留元数据封面图（书架缩略图）")
+    contains(no_coverpage_epub, '<meta name="cover" content="cover-image"/>', "普通期：保留 meta cover")
+    contains(no_coverpage_epub, '<spine toc="ncx"><itemref idref="ch1"/>',
+        "普通期：spine 首项即目录页（ch1）")
+end
+
 cleanup()
 
 ----------------------------------------------------------------------
