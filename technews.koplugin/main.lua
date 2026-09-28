@@ -384,7 +384,7 @@ function TechNews:getSourceReadItems()
     for _, source in ipairs(subscriptions.enabled(registry, self:sourceSetting())) do
         items[#items + 1] = {
             text = source.menu_label or source.name,
-            keep_menu_open = true, -- 抓取期间保持首页（同「打开今日资讯」）
+            keep_menu_open = true, -- 抓取期间保持首页（同「今日一期」）
             callback = function()
                 self:askIssueRange(source)
             end,
