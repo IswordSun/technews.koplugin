@@ -36,8 +36,39 @@ function storage:epub_exists(source_id, date)
     return lfs.attributes(self:epub_path(source_id, date), "mode") == "file"
 end
 
--- 前置声明（定义见文件末尾，clear_date/clear_all 也要用）
+-- 前置声明（定义见文件末尾，remove_issue/clear_* 也要用）
 local remove_recursive
+
+--- 删除一个缓存期刊物（含 .sdr 阅读状态与 .items.lua sidecar）；name = 文件名
+function storage:remove_issue(name)
+    os.remove(self.dir .. name)
+    remove_recursive(self.dir .. name .. ".sdr")
+    os.remove(self.dir .. name .. ".items.lua") -- 条目 sidecar（收藏定位用）
+end
+
+--- 列出缓存中的期刊物：{ name=文件名, id=源id, date=YYYY-MM-DD, path=完整路径 }
+-- 排序：日期倒序；同一天里合并期在前（更完整），其余按 id。
+-- 供「往期缓存」（浏览）与「缓存清理」（逐期删除）共用。
+function storage:list_issues()
+    if lfs.attributes(self.dir, "mode") ~= "directory" then return {} end
+    local entries = {}
+    for name in lfs.dir(self.dir) do
+        local id, date = name:match("^(.-)%-(%d%d%d%d%-%d%d%-%d%d)%.epub$")
+        if id and date then
+            entries[#entries + 1] = {
+                name = name, id = id, date = date, path = self.dir .. name,
+            }
+        end
+    end
+    table.sort(entries, function(a, b)
+        if a.date ~= b.date then return a.date > b.date end
+        if a.id == "merged" or b.id == "merged" then
+            return a.id == "merged" -- 同一天里合并期在前（更完整）
+        end
+        return a.id < b.id
+    end)
+    return entries
+end
 
 --- 删除指定日期的全部 EPUB 及其 .sdr 阅读状态（重新抓取用）
 function storage:clear_date(date)
@@ -51,9 +82,7 @@ function storage:clear_date(date)
         end
     end
     for _, name in ipairs(names) do
-        os.remove(self.dir .. name)
-        remove_recursive(self.dir .. name .. ".sdr")
-        os.remove(self.dir .. name .. ".items.lua") -- 条目 sidecar（收藏定位用）
+        self:remove_issue(name)
     end
 end
 
@@ -68,9 +97,7 @@ function storage:clear_all()
         end
     end
     for _, name in ipairs(names) do
-        os.remove(self.dir .. name)
-        remove_recursive(self.dir .. name .. ".sdr")
-        os.remove(self.dir .. name .. ".items.lua") -- 条目 sidecar（收藏定位用）
+        self:remove_issue(name)
     end
 end
 
@@ -107,9 +134,7 @@ function storage:cleanup(retain_days)
         end
     end
     for _, name in ipairs(names) do
-        os.remove(self.dir .. name)
-        remove_recursive(self.dir .. name .. ".sdr")
-        os.remove(self.dir .. name .. ".items.lua") -- 条目 sidecar（收藏定位用）
+        self:remove_issue(name)
         logger.info("technews cleanup removed:", name)
     end
     return #names

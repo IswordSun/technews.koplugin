@@ -36,15 +36,6 @@ return {
     require("technews.sources.ruanyf"),
     require("technews.sources.meituan"),
 
-    -- 境外新增（英文，实测无需代理）
-    require("technews.sources.androidauthority"),
-    require("technews.sources.slashdot"),
-    require("technews.sources.hackaday"),
-    require("technews.sources.macrumors"),
-    require("technews.sources.nine2five"),
-    require("technews.sources.bleeping"),
-    require("technews.sources.thn"),
-
     -- 日报类（2026-09-27）：API 驱动、支持按日期回溯
     -- （分源阅读的「昨日 / 自定义日期 / 近一周」能取到真正的往期）
     require("technews.sources.zhihudaily"),
@@ -56,4 +47,13 @@ return {
     -- （读诗 ≈1 篇/天全文 RSS；触乐 ≈2 篇/天游戏文化长文）
     require("technews.sources.bedtimepoem"),
     require("technews.sources.chuapp"),
+
+    -- 境外（英文，实测无需代理）——中文源之后，排在最后
+    require("technews.sources.androidauthority"),
+    require("technews.sources.slashdot"),
+    require("technews.sources.hackaday"),
+    require("technews.sources.macrumors"),
+    require("technews.sources.nine2five"),
+    require("technews.sources.bleeping"),
+    require("technews.sources.thn"),
 }

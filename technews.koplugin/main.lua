@@ -109,6 +109,31 @@ local function issue_range(kind, date)
     end
 end
 
+-- 字节数 → 人类可读（缓存列表用；与 weread 的展示习惯一致）
+local function human_size(bytes)
+    if bytes < 1024 * 1024 then
+        return string.format("%.0f KB", bytes / 1024)
+    end
+    return string.format("%.1f MB", bytes / 1024 / 1024)
+end
+
+-- 缓存期条目的显示名（往期缓存 / 缓存清理共用）：「源名 · 9月27日」（近一周加后缀）
+local function issue_label(entry)
+    local base_id = entry.id:gsub("%-week$", "")
+    local label
+    if base_id == "merged" then
+        label = "合并期"
+    else
+        local src = source_by_id(base_id)
+        label = (src and src.name) or base_id
+    end
+    if entry.id:sub(-5) == "-week" then
+        label = label .. " · 近一周"
+    end
+    local _, m, d = entry.date:match("(%d+)-(%d+)-(%d+)")
+    return string.format("%s · %s月%s日", label, tonumber(m), tonumber(d))
+end
+
 -- 从 URL 推断图片扩展名
 local function image_ext(url)
     local path = url:match("^[^?]+") or url
@@ -501,9 +526,10 @@ function TechNews:getSettingItems()
         end,
     }
     items[#items + 1] = {
-        text = "清理全部缓存",
-        keep_menu_open = true,
-        callback = function() self:confirmClearCache() end,
+        text = "缓存清理",
+        sub_item_table_func = function()
+            return self:getCacheCleanupItems()
+        end,
     }
     return items
 end
@@ -531,44 +557,88 @@ end
 
 --- 「往期缓存」子菜单：列出本机缓存过的各期刊物（近 7 天，随缓存清理自然过期）
 function TechNews:getHistoryItems()
-    local lfs = require("libs/libkoreader-lfs")
     local items = {}
-    if lfs.attributes(storage.dir, "mode") == "directory" then
-        local entries = {}
-        for name in lfs.dir(storage.dir) do
-            local id, date = name:match("^(.-)%-(%d%d%d%d%-%d%d%-%d%d)%.epub$")
-            if id and date then
-                entries[#entries + 1] = { id = id, date = date, path = storage.dir .. name }
-            end
-        end
-        -- 日期倒序；同一天里合并期在前（更完整），其余按 id 排
-        table.sort(entries, function(a, b)
-            if a.date ~= b.date then return a.date > b.date end
-            if a.id == "merged" or b.id == "merged" then
-                return a.id == "merged" -- 同一天里合并期在前（更完整）
-            end
-            return a.id < b.id
-        end)
-        for _, entry in ipairs(entries) do
-            local base_id = entry.id:gsub("%-week$", "")
-            local label
-            if base_id == "merged" then
-                label = "合并期"
-            else
-                local src = source_by_id(base_id)
-                label = (src and (src.menu_label or src.name)) or base_id
-            end
-            if entry.id:sub(-5) == "-week" then label = label .. " · 近一周" end
-            local _, m, d = entry.date:match("(%d+)-(%d+)-(%d+)")
-            items[#items + 1] = {
-                text = string.format("%s · %s月%s日", label, tonumber(m), tonumber(d)),
-                callback = function() self:openEpub(entry.path) end,
-            }
-            if #items >= 40 then break end
-        end
+    for _, entry in ipairs(storage:list_issues()) do
+        items[#items + 1] = {
+            text = issue_label(entry),
+            callback = function() self:openEpub(entry.path) end,
+        }
+        if #items >= 40 then break end
     end
     if #items == 0 then
         items[1] = { text = "暂无缓存", select_enabled = false }
+    end
+    return items
+end
+
+--- 「缓存清理」子菜单：逐期列出缓存（含体积），可只删某一期；末尾才是清除全部。
+-- （交互参照 weread：条目带体积、删除后就地重建列表；收藏不受影响）
+function TechNews:getCacheCleanupItems()
+    local lfs = require("libs/libkoreader-lfs")
+    local ConfirmBox = require("ui/widget/confirmbox")
+    local entries = storage:list_issues()
+    local items = {}
+    local total_size = 0
+    for _, entry in ipairs(entries) do
+        local label = issue_label(entry)
+        local attr = lfs.attributes(entry.path)
+        local size = (attr and attr.size) or 0
+        total_size = total_size + size
+        items[#items + 1] = {
+            text = string.format("%s（%s）", label, human_size(size)),
+            keep_menu_open = true,
+            callback = function()
+                UIManager:show(ConfirmBox:new{
+                    text = string.format(
+                        "清除「%s」的缓存？\n（该期 EPUB 与阅读进度将被删除，收藏不受影响）",
+                        label),
+                    ok_text = "清除",
+                    cancel_text = "取消",
+                    ok_callback = function()
+                        storage:remove_issue(entry.name)
+                        UIManager:show(InfoMessage:new{
+                            text = "已清除：" .. label,
+                            timeout = 2,
+                        })
+                        -- 成员已变化：整体重建缓存清理列表
+                        if self._home_menu then
+                            self._home_menu:switchItemTable("缓存清理",
+                                self:getCacheCleanupItems())
+                        end
+                    end,
+                })
+            end,
+        }
+    end
+    if #entries == 0 then
+        items[1] = { text = "暂无缓存", select_enabled = false }
+    else
+        items[#items + 1] = {
+            text = string.format("【清理】清除所有缓存（%d 期 · %s）",
+                #entries, human_size(total_size)),
+            separator = true,
+            keep_menu_open = true,
+            callback = function()
+                UIManager:show(ConfirmBox:new{
+                    text = string.format(
+                        "清除所有缓存？\n（共 %d 期 EPUB 与阅读进度，收藏不受影响）",
+                        #entries),
+                    ok_text = "清除",
+                    cancel_text = "取消",
+                    ok_callback = function()
+                        storage:clear_all()
+                        UIManager:show(InfoMessage:new{
+                            text = "缓存已清空",
+                            timeout = 2,
+                        })
+                        if self._home_menu then
+                            self._home_menu:switchItemTable("缓存清理",
+                                self:getCacheCleanupItems())
+                        end
+                    end,
+                })
+            end,
+        }
     end
     return items
 end
@@ -1407,22 +1477,6 @@ function TechNews:confirmRefetch()
             storage:clear_date(today_str())
             -- 清缓存后立即重新抓取合并期（带进度显示），无需用户再手动打开
             self:openMergedIssue()
-        end,
-    })
-end
-
-function TechNews:confirmClearCache()
-    local ConfirmBox = require("ui/widget/confirmbox")
-    UIManager:show(ConfirmBox:new{
-        text = "删除全部缓存的资讯 EPUB？",
-        ok_text = "删除",
-        cancel_text = "取消",
-        ok_callback = function()
-            storage:clear_all()
-            UIManager:show(InfoMessage:new{
-                text = "缓存已清空",
-                timeout = 1,
-            })
         end,
     })
 end
