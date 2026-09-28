@@ -328,7 +328,7 @@ end
 function TechNews:getHomeItems()
     return {
         {
-            text = "打开今日资讯",
+            text = "今日一期",
             -- keep_menu_open：抓取期间进度显示在首页之上，失败也能留在首页重试；
             -- 打开阅读器时由首页的 onShowingReader 正常收起（见 openHome）
             keep_menu_open = true,
