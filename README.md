@@ -89,3 +89,7 @@ bash scripts/make_snapshot.sh "<描述>"   # 里程碑快照（可安装 ZIP + �
 
 内容来自上述各新闻网站公开的 RSS 与网页；插件的缓存与收藏仅保存在本机（KOReader 数据目录）。
 仅供个人阅读学习，版权归原作者与各站点所有。
+
+## 许可证
+
+本项目采用 [GNU AGPL-3.0](LICENSE) 开源（与 KOReader 使用的许可证保持一致）。
