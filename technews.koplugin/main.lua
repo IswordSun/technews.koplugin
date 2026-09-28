@@ -331,13 +331,9 @@ function TechNews:getHomeItems()
             text = "今日一期",
             -- keep_menu_open：抓取期间进度显示在首页之上，失败也能留在首页重试；
             -- 打开阅读器时由首页的 onShowingReader 正常收起（见 openHome）
+            -- 已有今日一期时先弹「打开 / 重新抓取」询问（prompt_if_cached）
             keep_menu_open = true,
-            callback = function() self:openMergedIssue() end,
-        },
-        {
-            text = "重新抓取今日",
-            keep_menu_open = true, -- 取消「清除缓存」确认框后首页保持不丢
-            callback = function() self:confirmRefetch() end,
+            callback = function() self:openMergedIssue(true) end,
         },
         {
             text = "分源阅读",
@@ -1384,7 +1380,7 @@ function TechNews:openIssueRange(source, kind, date)
 end
 
 --- 打开已启用源的合并今日资讯
-function TechNews:openMergedIssue()
+function TechNews:openMergedIssue(prompt_if_cached)
     local sources = subscriptions.enabled(registry, self:sourceSetting())
     if #sources == 0 then
         UIManager:scheduleIn(0.1, function()
@@ -1397,7 +1393,12 @@ function TechNews:openMergedIssue()
     end
     local date = today_str()
     if storage:epub_exists("merged", date) then
-        self:openEpub(storage:epub_path("merged", date))
+        -- 首页入口：已有今日一期时先问「打开 / 重新抓取」；手势等快捷路径直接打开
+        if prompt_if_cached then
+            self:showTodayIssueDialog(date)
+        else
+            self:openEpub(storage:epub_path("merged", date))
+        end
         return
     end
     Trapper:wrap(function()
@@ -1467,18 +1468,35 @@ function TechNews:openMergedIssue()
     end)
 end
 
-function TechNews:confirmRefetch()
-    local ConfirmBox = require("ui/widget/confirmbox")
-    UIManager:show(ConfirmBox:new{
-        text = "清除今日缓存并重新抓取？（抓取全文与图片需要一些时间）",
-        ok_text = "重新抓取",
-        cancel_text = "取消",
-        ok_callback = function()
-            storage:clear_date(today_str())
-            -- 清缓存后立即重新抓取合并期（带进度显示），无需用户再手动打开
-            self:openMergedIssue()
-        end,
-    })
+--- 今日一期已存在：询问直接打开还是重新抓取（原「重新抓取今日」菜单项并入此处）
+function TechNews:showTodayIssueDialog(date)
+    local ButtonDialog = require("ui/widget/buttondialog")
+    local dialog
+    dialog = ButtonDialog:new{
+        title = "今日一期已生成",
+        buttons = {
+            {
+                { text = "打开", callback = function()
+                    UIManager:close(dialog)
+                    self:openEpub(storage:epub_path("merged", date))
+                end },
+                { text = "重新抓取", callback = function()
+                    UIManager:close(dialog)
+                    self:refetchToday()
+                end },
+            },
+            {
+                { text = "取消", callback = function() UIManager:close(dialog) end },
+            },
+        },
+    }
+    UIManager:show(dialog)
+end
+
+--- 清掉今日缓存并立即重新抓取合并期（带进度显示）
+function TechNews:refetchToday()
+    storage:clear_date(today_str())
+    self:openMergedIssue()
 end
 
 --- 检查在线更新（设置菜单入口）：GitHub Releases 取最新版，比较版本号
