@@ -18,7 +18,7 @@ local adapter = {
     mode = "api",
     max_items = 10,
     merge_max_items = 3,
-    default_enabled = false,
+    default_enabled = true, -- 默认启用（大众向日报源，2026-09-28 起）
 }
 
 local function get_json(path)

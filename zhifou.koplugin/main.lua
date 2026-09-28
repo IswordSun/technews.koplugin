@@ -279,7 +279,7 @@ function TechNews:openHome()
         UIManager:scheduleIn(0.2, function()
             UIManager:show(InfoMessage:new{
                 text = "首次使用：请到「设置 → 订阅源设置」中选择要订阅的源。\n\n"
-                    .. "默认启用：IT之家、雷锋网。",
+                    .. "默认启用：IT之家、雷锋网、知乎日报、「一个」。",
                 timeout = 6,
             })
         end)

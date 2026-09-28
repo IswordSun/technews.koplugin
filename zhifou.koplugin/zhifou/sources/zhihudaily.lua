@@ -17,7 +17,7 @@ local adapter = {
     mode = "api", -- 非 RSS：走自定义 fetch
     max_items = 20,
     merge_max_items = 6,
-    default_enabled = false,
+    default_enabled = true, -- 默认启用（大众向日报源，2026-09-28 起）
 }
 
 -- 北京时间的 YYYYMMDD（知乎按北京时间发布/归档；设备时区可能不准）
