@@ -397,8 +397,11 @@ function TechNews:getSourceReadItems()
     return items
 end
 
---- 时间范围询问框（分源阅读与合并期共用；on_pick(kind[, date]) 收到选择）
-function TechNews:showRangeDialog(title_text, on_pick)
+--- 时间范围询问框（分源阅读与合并期共用；on_pick(kind[, date]) 收到选择）。
+-- opts.include_today = true 时显示「今日」（分源阅读）；「抓取往期」入口不显示
+-- ——今日已由「今日一期」承担。
+function TechNews:showRangeDialog(title_text, on_pick, opts)
+    opts = opts or {}
     local ButtonDialog = require("ui/widget/buttondialog")
     local dialog
     local function pick(kind)
@@ -407,24 +410,37 @@ function TechNews:showRangeDialog(title_text, on_pick)
             on_pick(kind)
         end
     end
+    local function custom_date()
+        return function()
+            UIManager:close(dialog)
+            self:pickRangeDate(on_pick)
+        end
+    end
+    local buttons = {}
+    if opts.include_today then
+        buttons[#buttons + 1] = {
+            { text = "今日", callback = pick("today") },
+            { text = "昨日", callback = pick("yesterday") },
+        }
+        buttons[#buttons + 1] = {
+            { text = "近一周", callback = pick("week") },
+            { text = "自定义日期…", callback = custom_date() },
+        }
+    else
+        buttons[#buttons + 1] = {
+            { text = "昨日", callback = pick("yesterday") },
+            { text = "近一周", callback = pick("week") },
+        }
+        buttons[#buttons + 1] = {
+            { text = "自定义日期…", callback = custom_date() },
+        }
+    end
+    buttons[#buttons + 1] = {
+        { text = "取消", callback = function() UIManager:close(dialog) end },
+    }
     dialog = ButtonDialog:new{
         title = title_text,
-        buttons = {
-            {
-                { text = "今日", callback = pick("today") },
-                { text = "昨日", callback = pick("yesterday") },
-            },
-            {
-                { text = "近一周", callback = pick("week") },
-                { text = "自定义日期…", callback = function()
-                    UIManager:close(dialog)
-                    self:pickRangeDate(on_pick)
-                end },
-            },
-            {
-                { text = "取消", callback = function() UIManager:close(dialog) end },
-            },
-        },
+        buttons = buttons,
     }
     UIManager:show(dialog)
 end
@@ -445,14 +461,14 @@ function TechNews:pickRangeDate(on_pick)
     })
 end
 
---- 分源阅读：询问要抓取的时间范围
+--- 分源阅读：询问要抓取的时间范围（含「今日」）
 function TechNews:askIssueRange(source)
     self:showRangeDialog(source.name, function(kind, date)
         self:openIssueRange(source, kind, date)
-    end)
+    end, { include_today = true })
 end
 
---- 合并期：询问时间范围（「抓取往期」入口）
+--- 合并期：询问时间范围（「抓取往期」入口；不含「今日」）
 function TechNews:askMergedIssueRange()
     self:showRangeDialog("合并期刊", function(kind, date)
         self:openMergedIssueRange(kind, date)
