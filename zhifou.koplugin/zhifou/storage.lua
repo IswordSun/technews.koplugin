@@ -129,6 +129,10 @@ remove_recursive = function(path)
 end
 
 --- 清理超过 retain_days 天的缓存（EPUB 与对应 .sdr 阅读状态）。
+-- 按**文件修改时间**（=抓取时间）判定，而不是文件名里的日期：
+-- 「抓取往期」的历史期刊文件名带目标日期（如 merged-2026-09-19.epub），按文件名
+-- 判会在落盘瞬间被当成过期删除——实测阅读器打开它时报 unsupported or invalid
+-- document（文件已被清掉）。按 mtime 判既修此问题，又保持"保留最近 7 天抓取"语义。
 function storage:cleanup(retain_days)
     -- 目录不存在时 lfs.dir 迭代会抛错，直接返回
     if lfs.attributes(self.dir, "mode") ~= "directory" then return 0 end
@@ -136,11 +140,10 @@ function storage:cleanup(retain_days)
     local cutoff = os.time() - retain_days * 86400
     local names = {}
     for name in lfs.dir(self.dir) do
-        local date = name:match("%-(%d%d%d%d%-%d%d%-%d%d)%.epub$")
-        if date then
-            local y, m, d = date:match("(%d+)-(%d+)-(%d+)")
-            local t = os.time{ year = y, month = m, day = d, hour = 12 }
-            if t and t < cutoff then
+        if name:sub(-5) == ".epub" then
+            local attr = lfs.attributes(self.dir .. name)
+            local mtime = attr and attr.modification
+            if mtime and mtime < cutoff then
                 names[#names + 1] = name
             end
         end
