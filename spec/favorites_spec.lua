@@ -8,10 +8,10 @@
 -- 不依赖任何测试框架；所有断言通过时退出码为 0，否则为 1。
 
 local spec_dir = (arg and arg[0] or "spec/favorites_spec.lua"):match("^(.*)[/\\][^/\\]*$") or "."
-local plugin_dir = spec_dir .. "/../technews.koplugin"
+local plugin_dir = spec_dir .. "/../zhifou.koplugin"
 
 package.preload["datastorage"] = function()
-    return { getDataDir = function() return "/tmp/technews-favorites-spec" end }
+    return { getDataDir = function() return "/tmp/zhifou-favorites-spec" end }
 end
 package.preload["libs/libkoreader-lfs"] = function()
     return {
@@ -32,7 +32,7 @@ package.preload["ssl.https"] = function() return {} end
 package.preload["socket.http"] = function() return {} end
 package.preload["socketutil"] = function() return {} end
 package.path = plugin_dir .. "/?.lua;" .. package.path
-local favorites = require("technews.favorites")
+local favorites = require("zhifou.favorites")
 
 ----------------------------------------------------------------------
 -- 极简断言工具（与其它 spec 保持一致）

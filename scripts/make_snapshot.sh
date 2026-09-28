@@ -2,10 +2,10 @@
 # scripts/make_snapshot.sh — 生成里程碑快照（可安装 ZIP + 完整历史 bundle）
 #
 # 用法:   bash scripts/make_snapshot.sh "<描述>"
-# 前置:   工作区干净（所有改动已提交）；版本号自动读自 technews.koplugin/main.lua
+# 前置:   工作区干净（所有改动已提交）；版本号自动读自 zhifou.koplugin/main.lua
 # 产物:   snapshots/NN-<描述>-v<版本>-<短SHA>/
-#            ├── technews.koplugin-v<版本>.zip   可安装（根目录=technews.koplugin/，注释内嵌提交 SHA）
-#            └── technews-repo-<短SHA>.bundle    完整 git 历史（含 tags，可 clone 恢复）
+#            ├── zhifou.koplugin-v<版本>.zip   可安装（根目录=zhifou.koplugin/，注释内嵌提交 SHA）
+#            └── zhifou-repo-<短SHA>.bundle    完整 git 历史（含 tags，可 clone 恢复）
 #         快照自包含于本仓库的 snapshots/ 目录（gitignore），不写任何外部位置
 set -euo pipefail
 
@@ -25,7 +25,7 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
 fi
 
 # 版本号单一来源：main.lua 的 version 字段
-VERSION=$(grep -m1 'version = "' technews.koplugin/main.lua \
+VERSION=$(grep -m1 'version = "' zhifou.koplugin/main.lua \
     | sed -E 's/.*version = "([^"]+)".*/\1/')
 SHORT_SHA=$(git rev-parse --short HEAD)
 FULL_SHA=$(git rev-parse HEAD)
@@ -45,12 +45,12 @@ DIR_NAME="${NUM}-${DESC}-v${VERSION}-${SHORT_SHA}"
 OUT_DIR="$SNAP_ROOT/$DIR_NAME"
 mkdir -p "$OUT_DIR"
 
-ZIP_NAME="technews.koplugin-v${VERSION}.zip"
-BUNDLE_NAME="technews-repo-${SHORT_SHA}.bundle"
+ZIP_NAME="zhifou.koplugin-v${VERSION}.zip"
+BUNDLE_NAME="zhifou-repo-${SHORT_SHA}.bundle"
 
 # 1) 可安装 ZIP（git archive 子树 + 前缀；ZIP 注释内嵌提交 SHA，沿用备份惯例）
-git archive --format=zip --prefix="technews.koplugin/" \
-    -o "$OUT_DIR/$ZIP_NAME" "HEAD:technews.koplugin"
+git archive --format=zip --prefix="zhifou.koplugin/" \
+    -o "$OUT_DIR/$ZIP_NAME" "HEAD:zhifou.koplugin"
 if command -v zip >/dev/null 2>&1; then
     printf '%s %s\n' "$FULL_SHA" "$DESC" | zip -z "$OUT_DIR/$ZIP_NAME" >/dev/null
 fi
@@ -61,7 +61,7 @@ git bundle create "$OUT_DIR/$BUNDLE_NAME" --all >/dev/null
 # 3) 登记到 snapshots/README.md
 README="$SNAP_ROOT/README.md"
 if [ ! -f "$README" ]; then
-    printf '# technews 里程碑快照\n\n| 目录 | 描述 | 版本 | 提交 |\n| --- | --- | --- | --- |\n' > "$README"
+    printf '# zhifou 里程碑快照\n\n| 目录 | 描述 | 版本 | 提交 |\n| --- | --- | --- | --- |\n' > "$README"
 fi
 printf '| %s | %s | v%s | `%s` |\n' "$DIR_NAME" "$DESC" "$VERSION" "$SHORT_SHA" >> "$README"
 

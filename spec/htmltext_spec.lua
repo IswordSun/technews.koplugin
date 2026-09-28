@@ -1,4 +1,4 @@
--- spec/htmltext_spec.lua — technews HTML → 内容块提取逻辑的单元测试
+-- spec/htmltext_spec.lua — zhifou HTML → 内容块提取逻辑的单元测试
 --
 -- 覆盖 htmltext.blocks 的 v2 语义：
 --   1) <p> 内图片照旧收集（IT之家/雷锋网 回归）
@@ -14,7 +14,7 @@
 -- htmltext.lua 依赖 KOReader 的 util，这里注入恒等替身；样例均为无实体文本
 local spec_dir = (arg and arg[0] or "spec/htmltext_spec.lua"):match("^(.*)[/\\][^/\\]*$") or "."
 package.preload["util"] = function() return { htmlEntitiesToUtf8 = function(s) return s end } end
-local htmltext = dofile(spec_dir .. "/../technews.koplugin/technews/htmltext.lua")
+local htmltext = dofile(spec_dir .. "/../zhifou.koplugin/zhifou/htmltext.lua")
 
 ----------------------------------------------------------------------
 -- 极简断言工具

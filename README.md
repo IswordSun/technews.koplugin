@@ -1,6 +1,6 @@
-# technews.koplugin
+# zhifou.koplugin
 
-个人自用的 KOReader 插件「知否」（包名 technews.koplugin）：把多个科技资讯源（RSS/网页）抓取为**每日一期 EPUB**，用 KOReader 原生阅读器阅读。
+个人自用的 KOReader 插件「知否」（包名 zhifou.koplugin）：把多个科技资讯源（RSS/网页）抓取为**每日一期 EPUB**，用 KOReader 原生阅读器阅读。
 
 ## 功能
 
@@ -15,7 +15,7 @@
 
 ## 安装
 
-1. 把 `technews.koplugin/` 整个目录拷到 KOReader 的 `plugins/` 目录（如 `koreader/plugins/`）
+1. 把 `zhifou.koplugin/` 整个目录拷到 KOReader 的 `plugins/` 目录（如 `koreader/plugins/`）
 2. 重启 KOReader
 3. 主菜单 → 工具 → **知否**
 
@@ -30,7 +30,7 @@
 - **往期缓存**：列出本机缓存过的各期刊物（近 7 天），点击直接打开
 - **设置**：订阅源设置（勾选启停）、包含图片（默认开）、缓存清理（逐期选择删除，可清全部）
 - **阅读器内**：左上角「⋯」打开快捷菜单（目录 / 收藏文章 / 删除并返回 / 关闭并返回）
-- 快捷菜单也可绑手势：Dispatcher 动作 `technews_quickmenu`
+- 快捷菜单也可绑手势：Dispatcher 动作 `zhifou_quickmenu`
 
 ## 订阅源
 
@@ -77,7 +77,7 @@
 
 ```bash
 bash scripts/run_specs.sh                # Lua 规格测试（11 个 spec / 388 项断言）
-luacheck technews.koplugin spec          # 静态检查
+luacheck zhifou.koplugin spec          # 静态检查
 bash scripts/make_snapshot.sh "<描述>"   # 里程碑快照（可安装 ZIP + 完整 git 历史 bundle）
 ```
 

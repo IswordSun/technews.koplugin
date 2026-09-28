@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/run_specs.sh — 运行 technews 的 Lua 单元测试
+# scripts/run_specs.sh — 运行 zhifou 的 Lua 单元测试
 #
 # 用法（在任意工作目录均可）：
 #   bash scripts/run_specs.sh

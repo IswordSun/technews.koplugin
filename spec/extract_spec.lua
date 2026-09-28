@@ -1,18 +1,18 @@
--- spec/extract_spec.lua — technews 网页正文抽取（extract.lua）的单元测试
+-- spec/extract_spec.lua — zhifou 网页正文抽取（extract.lua）的单元测试
 --
 -- 重点：多起始标记（starts）取页面中最靠前的命中（与候选列表顺序无关）并支持回退、
 -- 旧接口 start 仍可用、ends 取最早出现者、max_len 兜底窗口、drop 关键词过滤、空区域返回 nil。
 -- 运行方式：bash scripts/run_specs.sh（或直接 luajit spec/extract_spec.lua）
 -- 不依赖任何测试框架；所有断言通过时退出码为 0，否则为 1。
 --
--- extract.lua → technews.htmltext → require("util")（KOReader 运行时模块），
+-- extract.lua → zhifou.htmltext → require("util")（KOReader 运行时模块），
 -- 这里用 package.preload 给 util 打桩；桩不做实体解码，故样例一律不含实体。
 
 local spec_dir = (arg and arg[0] or "spec/extract_spec.lua"):match("^(.*)[/\\][^/\\]*$") or "."
-local plugin_dir = spec_dir .. "/../technews.koplugin"
+local plugin_dir = spec_dir .. "/../zhifou.koplugin"
 package.preload["util"] = function() return { htmlEntitiesToUtf8 = function(s) return s end } end
 package.path = plugin_dir .. "/?.lua;" .. package.path
-local extract = require("technews.extract")
+local extract = require("zhifou.extract")
 
 ----------------------------------------------------------------------
 -- 极简断言工具（与其它 spec 保持一致）

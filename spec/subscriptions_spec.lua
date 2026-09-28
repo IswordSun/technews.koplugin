@@ -1,4 +1,4 @@
--- spec/subscriptions_spec.lua — technews 订阅源启用集合逻辑的单元测试
+-- spec/subscriptions_spec.lua — zhifou 订阅源启用集合逻辑的单元测试
 --
 -- 语义：setting == nil → 用适配器的 default_enabled；
 --       setting 为表   → 只有 setting[id] == true 才算启用（空表 = 全部停用）。
@@ -7,7 +7,7 @@
 
 -- 以脚本自身路径定位被测模块，保证从任意工作目录运行都成立
 local spec_dir = (arg and arg[0] or "spec/subscriptions_spec.lua"):match("^(.*)[/\\][^/\\]*$") or "."
-local subscriptions = dofile(spec_dir .. "/../technews.koplugin/technews/subscriptions.lua")
+local subscriptions = dofile(spec_dir .. "/../zhifou.koplugin/zhifou/subscriptions.lua")
 
 ----------------------------------------------------------------------
 -- 极简断言工具

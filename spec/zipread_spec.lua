@@ -1,4 +1,4 @@
--- spec/zipread_spec.lua — technews 最小 ZIP 读取器（technews/zipread.lua）测试
+-- spec/zipread_spec.lua — zhifou 最小 ZIP 读取器（zhifou/zipread.lua）测试
 --
 -- 运行方式：bash scripts/run_specs.sh（或直接 luajit spec/zipread_spec.lua）
 -- 不依赖测试框架，也不需要 KOReader 运行时：先用 epub.lua 构建一个真实
@@ -8,8 +8,8 @@
 -- 以及 method 8（deflate）条目被拒绝（把中央目录条目的 method 字段改掉模拟）。
 
 local spec_dir = (arg and arg[0] or "spec/zipread_spec.lua"):match("^(.*)[/\\][^/\\]*$") or "."
-local Epub = dofile(spec_dir .. "/../technews.koplugin/technews/epub.lua")
-local zipread = dofile(spec_dir .. "/../technews.koplugin/technews/zipread.lua")
+local Epub = dofile(spec_dir .. "/../zhifou.koplugin/zhifou/epub.lua")
+local zipread = dofile(spec_dir .. "/../zhifou.koplugin/zhifou/zipread.lua")
 
 ----------------------------------------------------------------------
 -- 极简断言工具（与其它 spec 保持一致）

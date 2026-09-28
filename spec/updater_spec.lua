@@ -2,12 +2,12 @@
 --
 -- 覆盖：版本号解析/比较、候选 URL（直连在前+镜像在后，且仅放行本站地址）、
 -- release 解析（草稿/预发布/非法 tag/缺 ZIP/体积超限）。
--- updater.lua 顶部的 technews.http 会 require LuaSocket/LuaSec/KOReader 模块，
+-- updater.lua 顶部的 zhifou.http 会 require LuaSocket/LuaSec/KOReader 模块，
 -- 这里统一打桩，测试不触网、不落盘。
 -- 运行方式：bash scripts/run_specs.sh（或直接 luajit spec/updater_spec.lua）
 
 local spec_dir = (arg and arg[0] or "spec/updater_spec.lua"):match("^(.*)[/\\][^/\\]*$") or "."
-local plugin_dir = spec_dir .. "/../technews.koplugin"
+local plugin_dir = spec_dir .. "/../zhifou.koplugin"
 
 package.preload["ltn12"] = function()
     return { sink = { file = function() end, table = function() end } }
@@ -26,7 +26,7 @@ package.preload["logger"] = function()
 end
 package.preload["json"] = function() return { decode = function() return nil end } end
 package.path = plugin_dir .. "/?.lua;" .. package.path
-local updater = require("technews.updater")
+local updater = require("zhifou.updater")
 
 ----------------------------------------------------------------------
 -- 极简断言工具（与其它 spec 保持一致）
@@ -86,7 +86,7 @@ do
             ("候选：第 %d 项为镜像前缀 + 原地址"):format(i))
     end
 
-    local asset = updater.RELEASE_PREFIX .. "v0.1.4/technews.koplugin-v0.1.4.zip"
+    local asset = updater.RELEASE_PREFIX .. "v0.1.4/zhifou.koplugin-v0.1.4.zip"
     eq(#updater.candidate_urls(asset), 1 + #updater.MIRRORS, "候选：Release 资产地址可用")
     eq(#updater.candidate_urls("https://evil.example.com/x.zip"), 0,
         "候选：站外地址被拒绝（防任意下载）")
@@ -100,12 +100,12 @@ end
 local function release_fixture(overrides)
     local base = {
         tag_name = "v0.1.4",
-        html_url = "https://github.com/IswordSun/technews.koplugin/releases/tag/v0.1.4",
+        html_url = "https://github.com/IswordSun/zhifou.koplugin/releases/tag/v0.1.4",
         body = "更新说明",
         assets = {
             {
-                name = "technews.koplugin-v0.1.4.zip",
-                browser_download_url = updater.RELEASE_PREFIX .. "v0.1.4/technews.koplugin-v0.1.4.zip",
+                name = "zhifou.koplugin-v0.1.4.zip",
+                browser_download_url = updater.RELEASE_PREFIX .. "v0.1.4/zhifou.koplugin-v0.1.4.zip",
                 size = 60000,
             },
         },
@@ -118,7 +118,7 @@ do
     local release = updater.parse_release(release_fixture())
     ok(release ~= nil, "parse_release：正常发布可解析")
     eq(release.version, "0.1.4", "parse_release：版本号去掉 v 前缀")
-    eq(release.zip_url, updater.RELEASE_PREFIX .. "v0.1.4/technews.koplugin-v0.1.4.zip",
+    eq(release.zip_url, updater.RELEASE_PREFIX .. "v0.1.4/zhifou.koplugin-v0.1.4.zip",
         "parse_release：取到 ZIP 资产地址")
 
     eq(updater.parse_release(release_fixture({ draft = true })), nil, "parse_release：草稿拒绝")
@@ -129,7 +129,7 @@ do
 
     local evil = release_fixture({
         assets = { {
-            name = "technews.koplugin-v0.1.4.zip",
+            name = "zhifou.koplugin-v0.1.4.zip",
             browser_download_url = "https://evil.example.com/x.zip",
             size = 60000,
         } },
@@ -138,7 +138,7 @@ do
 
     local huge = release_fixture({
         assets = { {
-            name = "technews.koplugin-v0.1.4.zip",
+            name = "zhifou.koplugin-v0.1.4.zip",
             browser_download_url = updater.RELEASE_PREFIX .. "v0.1.4/big.zip",
             size = updater.MAX_PACKAGE_BYTES + 1,
         } },

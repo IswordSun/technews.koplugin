@@ -1,4 +1,4 @@
--- spec/window_spec.lua — technews「今日窗口」过滤逻辑的单元测试
+-- spec/window_spec.lua — zhifou「今日窗口」过滤逻辑的单元测试
 --
 -- 严格语义：只取本地今日 0 点起的条目，不回补旧条目（2026-09-20 起）。
 -- 运行方式：bash scripts/run_specs.sh（或直接 luajit spec/window_spec.lua）
@@ -6,7 +6,7 @@
 
 -- 以脚本自身路径定位被测模块，保证从任意工作目录运行都成立
 local spec_dir = (arg and arg[0] or "spec/window_spec.lua"):match("^(.*)[/\\][^/\\]*$") or "."
-local window = dofile(spec_dir .. "/../technews.koplugin/technews/window.lua")
+local window = dofile(spec_dir .. "/../zhifou.koplugin/zhifou/window.lua")
 
 ----------------------------------------------------------------------
 -- 极简断言工具

@@ -1,4 +1,4 @@
--- spec/epub_spec.lua — technews EPUB 目录（nav.xhtml / toc.ncx）结构测试
+-- spec/epub_spec.lua — zhifou EPUB 目录（nav.xhtml / toc.ncx）结构测试
 --
 -- 运行方式：bash scripts/run_specs.sh（或直接 luajit spec/epub_spec.lua）
 -- 不依赖任何测试框架；所有断言通过时退出码为 0，否则为 1。
@@ -7,7 +7,7 @@
 -- 可直接整体当字符串搜索，逐字节校验 nav/ncx 的标记与嵌套关系。
 
 local spec_dir = (arg and arg[0] or "spec/epub_spec.lua"):match("^(.*)[/\\][^/\\]*$") or "."
-local Epub = dofile(spec_dir .. "/../technews.koplugin/technews/epub.lua")
+local Epub = dofile(spec_dir .. "/../zhifou.koplugin/zhifou/epub.lua")
 
 ----------------------------------------------------------------------
 -- 极简断言工具（与其它 spec 保持一致）

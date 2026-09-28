@@ -1,5 +1,5 @@
--- Luacheck 配置 — technews.koplugin
--- 用法：在项目根目录执行 `luacheck technews.koplugin`
+-- Luacheck 配置 — zhifou.koplugin（2026-09-28 由 technews.koplugin 改名）
+-- 用法：在项目根目录执行 `luacheck zhifou.koplugin`
 --
 -- 参考：koreader-dev/.luacheckrc（KOReader 主仓库，本工作区权威样板）
 
@@ -7,8 +7,8 @@
 -- 提供 bit/utf8 等，并与 KOReader 自身 .luacheckrc 保持一致。
 std = "luajit"
 
--- 部分菜单方法用冒号语法定义但未使用实例状态（如 TechNews:autoRefreshEnabled、
--- TechNews:confirmRefetch），其隐式 self 参数并非真正的未使用变量。
+-- 部分菜单方法用冒号语法定义但未使用实例状态（如 TechNews:refetchToday、
+-- TechNews:openIssueRange），其隐式 self 参数并非真正的未使用变量。
 -- 与 koreader-dev/.luacheckrc 的 `self = false` 同理，仅忽略隐式 self，
 -- 显式传入的参数仍会被检查。
 self = false
@@ -19,12 +19,12 @@ globals = {
     "G_reader_settings",
     -- 自测一次性守卫，在 main.lua:75 赋值（插件经 dofile 重载，模块态
     -- 会被重置，必须用全局记录，属有意为之）
-    "G_technews_selftest_done",
+    "G_zhifou_selftest_done",
 }
 
--- technews/epub.lua 内嵌单行 EPUB XML/XHTML 模板与 string.format 标记串，
+-- zhifou/epub.lua 内嵌单行 EPUB XML/XHTML 模板与 string.format 标记串，
 -- 超长行是有意为之（换行反而难读）。仅行宽问题，故按文件收窄忽略。
-files["technews.koplugin/technews/epub.lua"] = {
+files["zhifou.koplugin/zhifou/epub.lua"] = {
     ignore = {
         "631", -- line is too long
     },

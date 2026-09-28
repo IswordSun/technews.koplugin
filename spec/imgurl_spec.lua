@@ -1,11 +1,11 @@
--- spec/imgurl_spec.lua — technews 图片 URL 重写逻辑的单元测试
+-- spec/imgurl_spec.lua — zhifou 图片 URL 重写逻辑的单元测试
 --
 -- 运行方式：bash scripts/run_specs.sh（或直接 luajit spec/imgurl_spec.lua）
 -- 不依赖任何测试框架；所有断言通过时退出码为 0，否则为 1。
 
 -- 以脚本自身路径定位被测模块，保证从任意工作目录运行都成立
 local spec_dir = (arg and arg[0] or "spec/imgurl_spec.lua"):match("^(.*)[/\\][^/\\]*$") or "."
-local imgurl = dofile(spec_dir .. "/../technews.koplugin/technews/imgurl.lua")
+local imgurl = dofile(spec_dir .. "/../zhifou.koplugin/zhifou/imgurl.lua")
 
 ----------------------------------------------------------------------
 -- 极简断言工具

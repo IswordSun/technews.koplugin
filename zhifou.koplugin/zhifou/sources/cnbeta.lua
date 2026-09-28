@@ -1,0 +1,33 @@
+-- zhifou/sources/cnbeta.lua — CNBeta 适配器（当前未启用）
+--
+-- 停用原因（2026-09-20）：CNBeta 的 .tw 域名在境外出口 IP 下全站 302 跳转
+-- MSN，大陆不翻墙不可达；第二个源已改为雷锋网（见 sources/leiphone.lua）。
+-- 重新启用：在 zhifou/sources/registry.lua 中追加 require("zhifou.sources.cnbeta")。
+--
+-- 停用前的说明：RSS 描述约 360 字（含 HTML），完整正文仍逐篇抓文章页提取。
+-- 2026-09-20：旧 feed backend.php 已 302 跳转 MSN，改用 rss.cnbeta.com.tw；
+-- 部分网络（境外出口 IP）下文章页也会 302，抓取失败时回退到 RSS 描述。
+
+return {
+    id = "cnbeta",
+    name = "CNBeta",
+    feed = "https://rss.cnbeta.com.tw/",
+    mode = "fulltext",      -- 抓取每篇正文
+    max_items = 25,         -- 逐篇抓取，控制数量（每篇 1 次请求）
+    merge_max_items = 12,
+    article_extract = {
+        start = '<div class="cnbeta-article-body">',
+        ends = {
+            '<div class="clear"></div>',
+            'id="comments"',
+            'class="comments',
+        },
+        max_len = 30000,
+        drop = {
+            "adsbygoogle",
+            "slotbydup",
+            "window.adsbygoogle",
+            "googlesyndication",
+        },
+    },
+}

@@ -1,18 +1,18 @@
--- spec/rss_spec.lua — technews RSS 解析（rss.lua）的单元测试
+-- spec/rss_spec.lua — zhifou RSS 解析（rss.lua）的单元测试
 --
 -- 重点：content:encoded 非空时优先于 description（爱范儿全文正文），
 -- 以及 CDATA 剥离、pubDate（时区等价、省略秒）、缺 link 跳过等语义。
 -- 运行方式：bash scripts/run_specs.sh（或直接 luajit spec/rss_spec.lua）
 -- 不依赖任何测试框架；所有断言通过时退出码为 0，否则为 1。
 --
--- rss.lua → technews.htmltext → require("util")（KOReader 运行时模块），
+-- rss.lua → zhifou.htmltext → require("util")（KOReader 运行时模块），
 -- 这里用 package.preload 给 util 打桩；桩不做实体解码，故样例一律不含实体。
 
 local spec_dir = (arg and arg[0] or "spec/rss_spec.lua"):match("^(.*)[/\\][^/\\]*$") or "."
-local plugin_dir = spec_dir .. "/../technews.koplugin"
+local plugin_dir = spec_dir .. "/../zhifou.koplugin"
 package.preload["util"] = function() return { htmlEntitiesToUtf8 = function(s) return s end } end
 package.path = plugin_dir .. "/?.lua;" .. package.path
-local rss = require("technews.rss")
+local rss = require("zhifou.rss")
 
 ----------------------------------------------------------------------
 -- 极简断言工具（与其它 spec 保持一致）
