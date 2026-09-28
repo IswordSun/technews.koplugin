@@ -336,6 +336,11 @@ function TechNews:getHomeItems()
             callback = function() self:openMergedIssue(true) end,
         },
         {
+            text = "抓取往期",
+            keep_menu_open = true, -- 抓取期间保持首页（与「今日一期」一致）
+            callback = function() self:askMergedIssueRange() end,
+        },
+        {
             text = "分源阅读",
             sub_item_table_func = function()
                 return self:getSourceReadItems()
@@ -392,18 +397,18 @@ function TechNews:getSourceReadItems()
     return items
 end
 
---- 询问要抓取的时间范围（分源阅读点开某个源后）
-function TechNews:askIssueRange(source)
+--- 时间范围询问框（分源阅读与合并期共用；on_pick(kind[, date]) 收到选择）
+function TechNews:showRangeDialog(title_text, on_pick)
     local ButtonDialog = require("ui/widget/buttondialog")
     local dialog
     local function pick(kind)
         return function()
             UIManager:close(dialog)
-            self:openIssueRange(source, kind)
+            on_pick(kind)
         end
     end
     dialog = ButtonDialog:new{
-        title = source.menu_label or source.name,
+        title = title_text,
         buttons = {
             {
                 { text = "今日", callback = pick("today") },
@@ -413,7 +418,7 @@ function TechNews:askIssueRange(source)
                 { text = "近一周", callback = pick("week") },
                 { text = "自定义日期…", callback = function()
                     UIManager:close(dialog)
-                    self:pickIssueDate(source)
+                    self:pickRangeDate(on_pick)
                 end },
             },
             {
@@ -424,8 +429,8 @@ function TechNews:askIssueRange(source)
     UIManager:show(dialog)
 end
 
---- 自定义日期（DateTimeWidget；显式 year_min，默认 2021 会挡住更早的日期）
-function TechNews:pickIssueDate(source)
+--- 自定义日期选择（DateTimeWidget；显式 year_min，默认 2021 会挡住更早的日期）
+function TechNews:pickRangeDate(on_pick)
     local DateTimeWidget = require("ui/widget/datetimewidget")
     local today = os.date("*t")
     UIManager:show(DateTimeWidget:new{
@@ -434,10 +439,24 @@ function TechNews:pickIssueDate(source)
         ok_text = "确定", cancel_text = "取消",
         title_text = "读哪一天的文章？",
         callback = function(time)
-            self:openIssueRange(source, "date",
+            on_pick("date",
                 string.format("%04d-%02d-%02d", time.year, time.month, time.day))
         end,
     })
+end
+
+--- 分源阅读：询问要抓取的时间范围
+function TechNews:askIssueRange(source)
+    self:showRangeDialog(source.name, function(kind, date)
+        self:openIssueRange(source, kind, date)
+    end)
+end
+
+--- 合并期：询问时间范围（「抓取往期」入口）
+function TechNews:askMergedIssueRange()
+    self:showRangeDialog("合并期刊", function(kind, date)
+        self:openMergedIssueRange(kind, date)
+    end)
 end
 
 --- 「订阅源设置」子菜单：每个登记源一个勾选项（勾选即生效并清今日缓存）
@@ -1381,16 +1400,6 @@ end
 
 --- 打开已启用源的合并今日资讯
 function TechNews:openMergedIssue(prompt_if_cached)
-    local sources = subscriptions.enabled(registry, self:sourceSetting())
-    if #sources == 0 then
-        UIManager:scheduleIn(0.1, function()
-            UIManager:show(InfoMessage:new{
-                text = "请先在「订阅源设置」中选择至少一个新闻源",
-                timeout = 4,
-            })
-        end)
-        return
-    end
     local date = today_str()
     if storage:epub_exists("merged", date) then
         -- 首页入口：已有今日一期时先问「打开 / 重新抓取」；手势等快捷路径直接打开
@@ -1401,6 +1410,40 @@ function TechNews:openMergedIssue(prompt_if_cached)
         end
         return
     end
+    self:fetchAndOpenMerged("merged", date, nil)
+end
+
+--- 打开合并期的指定时间范围（「抓取往期」：今日 / 昨日 / 近一周 / 指定日期）。
+-- 缓存键：今日为 merged-<今日>，近一周为 merged-week-<今日>，其余以目标日为刊期。
+function TechNews:openMergedIssueRange(kind, date)
+    local range, why = issue_range(kind, date)
+    if not range then
+        UIManager:scheduleIn(0.1, function()
+            UIManager:show(InfoMessage:new{ text = why or "无效的日期", timeout = 2 })
+        end)
+        return
+    end
+    local issue_id = "merged" .. range.suffix
+    if storage:epub_exists(issue_id, range.date) then
+        self:openEpub(storage:epub_path(issue_id, range.date))
+        return
+    end
+    self:fetchAndOpenMerged(issue_id, range.date, range)
+end
+
+--- 抓取并打开合并期（共享管线；range 为空 = 严格今日）：
+-- 逐源抓取（跨源共享图片额度）→ 按时间倒序 → 跨源去重 → 构建打开
+function TechNews:fetchAndOpenMerged(issue_id, date, range)
+    local sources = subscriptions.enabled(registry, self:sourceSetting())
+    if #sources == 0 then
+        UIManager:scheduleIn(0.1, function()
+            UIManager:show(InfoMessage:new{
+                text = "请先在「订阅源设置」中选择至少一个新闻源",
+                timeout = 4,
+            })
+        end)
+        return
+    end
     Trapper:wrap(function()
         local all = {}
         local all_images = {}
@@ -1409,7 +1452,7 @@ function TechNews:openMergedIssue(prompt_if_cached)
         for i, source in ipairs(sources) do
             local bundle, err = self:fetchSource(source, source.merge_max_items,
                 { source_index = i, source_count = #sources,
-                  image_budget = image_budget })
+                  image_budget = image_budget }, range)
             if bundle then
                 -- 合并期图片上限跨源共享：按实际下载数扣减剩余额度
                 local used = 0
@@ -1436,8 +1479,9 @@ function TechNews:openMergedIssue(prompt_if_cached)
         if #all == 0 then
             Trapper:clear()
             self:showFetchError(
-                table.concat(failed, "、") .. " 均不可用",
-                function() self:openMergedIssue() end)
+                (range and range.empty)
+                    or (table.concat(failed, "、") .. " 均不可用"),
+                function() self:fetchAndOpenMerged(issue_id, date, range) end)
             return
         end
         -- 按时间倒序排列（无时间的排最后）
@@ -1462,8 +1506,8 @@ function TechNews:openMergedIssue(prompt_if_cached)
                 pair.a.title, "|", pair.b.title, "|",
                 ("%.2f"):format(pair.similarity))
         end
-        local title = "知否 · " .. date
-        self:buildAndOpen("merged", title, date, kept, all_images)
+        local title = "知否 · " .. (range and range.title or date)
+        self:buildAndOpen(issue_id, title, date, kept, all_images)
         Trapper:clear()
     end)
 end
