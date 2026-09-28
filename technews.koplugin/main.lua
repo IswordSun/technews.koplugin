@@ -502,10 +502,6 @@ function TechNews:getSourceSettingItems()
             end,
         }
     end
-    items[#items + 1] = {
-        text = "勾选即生效；改动会清除今日缓存",
-        select_enabled = false,
-    }
     return items
 end
 
