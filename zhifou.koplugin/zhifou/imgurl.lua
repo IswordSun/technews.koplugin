@@ -42,6 +42,9 @@ local imgurl = {}
 local QINIU = "%s?imageView2/2/w/%d"
 local QINIU_JPG = "%s?imageView2/2/w/%d/format/jpg/quality/75"
 local QINIU_GRAY = "%s?imageMogr2/thumbnail/%dx>/format/jpg/quality/75/colorspace/Gray"
+-- 腾讯 COS（数据万象）用 imageMogr2 家族（imageView2 在它上面不可用）
+local QINIU_MOGR2 = "%s?imageMogr2/thumbnail/%dx>"
+local QINIU_MOGR2_JPG = "%s?imageMogr2/thumbnail/%dx>/format/jpg/quality/75"
 
 -- 各图床的重写规则：按顺序匹配，先匹配先赢。
 -- host         = 匹配 URL 前缀的 Lua 模式，或模式数组（任一命中即算匹配；
@@ -107,6 +110,21 @@ local RULES = {
         host = "^https?://image%.wufazhuce%.com/",
         recipe = QINIU,
         lossy_recipe = QINIU_JPG,
+        lossy_ext = { png = true, gif = true },
+        gray_recipe = QINIU_GRAY,
+    },
+    {
+        -- 腾讯云 COS（数据万象）：语法与七牛 imageMogr2 兼容，实测
+        --   ?imageMogr2/thumbnail/800x>            → 39.6KB→25.5KB（只缩不放）
+        --   + /format/jpg/quality/75               → 21.9KB
+        --   + /colorspace/Gray                     → 21.9KB（灰度）
+        -- 「读首诗再睡觉」的图全在这（b-<appid>.cos.<region>.myqcloud.com）。
+        host = {
+            "^https?://[%w%-%.]*%.cos%.[%w%-%.]*myqcloud%.com/",
+            "^https?://[%w%-%.]*%.cos%-internal%.[%w%-%.]*myqcloud%.com/",
+        },
+        recipe = QINIU_MOGR2,
+        lossy_recipe = QINIU_MOGR2_JPG,
         lossy_ext = { png = true, gif = true },
         gray_recipe = QINIU_GRAY,
     },

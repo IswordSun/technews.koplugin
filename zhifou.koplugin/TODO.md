@@ -91,6 +91,18 @@
 - [x] **顺带修复**：`storage:list_issues` 比较器违反严格弱序导致同日合并期排序随机错乱
 - [ ] 待评估：更狠的灰阶（BCE 无接口）、EPUB 校验接入 CI（epubcheck）、图片体积上限可调（设置项）
 
+## H. 网络层（2026-09-30）
+
+- [x] **HTTP gzip 支持**：请求声明 `Accept-Encoding: gzip, deflate`，按响应头解压（新增 `zhifou/gzip.lua`，
+      FFI 调 zlib；`ffi/zlib.lua` 解不了 gzip）；解压失败不重试
+- [x] **修「读首诗再睡觉」每次卡很久**：该源 feed 2.01MB（WordPress 全文进 content:encoded），
+      弱网下超过 30s 总超时 → 重试 4 次 ≈ 卡两分钟；gzip 后 204KB/4.3 秒（实测）
+- [x] **腾讯 COS 图片规则**：数据万象 `imageMogr2/thumbnail/800x>`（+ 转 JPEG/灰度），
+      该源图片 39.6KB → 21.9KB
+- [x] **状态码判定收紧** `code == 200`（旧的 `status:find("200")` 兜底有误判风险）
+- [ ] 未做：`http.download` 的 gzip（更新包/大文件本身已压缩，收益小）；断点续传；
+      逐源超时可调（当前统一 10s/30s）
+
 ## 已知取舍记录
 
 - **“今日”的定义**：严格本地 0 点起（只取当日条目，不回补；2026-09-20 用户要求）。

@@ -27,6 +27,11 @@ local function request_once(url, block_timeout, total_timeout, referer)
         ["User-Agent"] = UA,
         ["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         ["Accept-Language"] = "zh-CN,zh;q=0.9,en;q=0.8",
+        -- 声明支持压缩：feed/HTML/JSON 压完能小一个数量级。
+        -- 实测「读首诗再睡觉」feed 2.01MB → 209KB——它原本每次抓取都要下满 2MB，
+        -- 在设备端超过 30s 总超时 → 重试 4 次 ≈ 卡两分钟。图片不受影响
+        -- （本身已压缩，服务端不会再压）。
+        ["Accept-Encoding"] = "gzip, deflate",
     }
     -- 部分图床 CDN（如少数派 cdnfile.sspai.com）不带 Referer 会返回 403；
     -- 而微信图床 mmbiz.qpic.cn 正相反：带第三方 Referer 会被换成 140x140 占位图。
@@ -36,7 +41,8 @@ local function request_once(url, block_timeout, total_timeout, referer)
     end
     local transport = url:match("^http://") and socket_http or https
     -- LuaSocket：成功时返回 (1, 状态码, headers, status)；失败时返回错误码
-    local code, headers, status = socket.skip(1, transport.request{
+    -- （status 状态行只在排错时有用，判定一律用数字状态码）
+    local code, headers = socket.skip(1, transport.request{
         url = url,
         headers = req_headers,
         sink = ltn12.sink.table(body),
@@ -48,12 +54,25 @@ local function request_once(url, block_timeout, total_timeout, referer)
         -- "closed" / "timeout" 等连接层错误码
         return nil, "连接失败（" .. tostring(code) .. "）"
     end
-    local ok_status = code == 200
-        or (status and tostring(status):find("200"))
-    if not ok_status then
+    -- 只认数字状态码 200：LuaSocket 成功时 code 就是数字状态，
+    -- 旧的 `status:find("200")` 兜底会把任何含 "200" 的状态行当成成功
+    -- （status 只在日志里有意义，这里不再用它判定）
+    if code ~= 200 then
         return nil, "HTTP " .. tostring(code)
     end
-    return table.concat(body)
+    local body_text = table.concat(body)
+    -- 服务端压缩过就必须解压，否则上层拿到的是二进制乱码（解析会失败得莫名其妙）；
+    -- 少数 CDN 即使没被请求也会回 gzip，所以这里只看响应头，不看我们请求了什么
+    local encoding = headers and headers["content-encoding"]
+    if encoding and encoding ~= "" and encoding ~= "identity" then
+        local gzip = require("zhifou.gzip")
+        local plain, unzip_err = gzip.inflate(body_text)
+        if not plain then
+            return nil, string.format("解压失败（%s：%s）", tostring(encoding), tostring(unzip_err))
+        end
+        return plain
+    end
+    return body_text
 end
 
 --- GET 请求（自动重试），返回响应体或 (nil, 错误信息)
@@ -77,9 +96,12 @@ function http.get(url, block_timeout, total_timeout, retries, opts)
         end
         last_err = err
         -- 仅连接层错误（无 "HTTP <code>" 前缀）或 5xx 可重试；4xx 等立即返回，
-        -- 避免每次失败都白等数轮超时与退避（如失效 feed 的 404）
+        -- 避免每次失败都白等数轮超时与退避（如失效 feed 的 404）。
+        -- 解压失败也是确定性的：重试只会把整个响应体再下一次（大 feed 尤其亏），直接返回。
         local http_code = tostring(err):match("^HTTP (%d+)")
-        if attempt > retries or (http_code and http_code:sub(1, 1) ~= "5") then
+        local fatal = (http_code and http_code:sub(1, 1) ~= "5")
+            or tostring(err):find("解压失败", 1, true) ~= nil
+        if attempt > retries or fatal then
             break
         end
         logger.warn("zhifou http retry:", url,

@@ -221,6 +221,35 @@ do
 end
 
 ----------------------------------------------------------------------
+-- 腾讯云 COS（数据万象，imageMogr2 家族）：「读首诗再睡觉」的图床
+-- 实测 39.6KB→25.5KB（thumbnail/800x>）、→21.9KB（+format/jpg/quality/75）
+----------------------------------------------------------------------
+do
+    local base = "https://b-1254719278.cos.accelerate.myqcloud.com/wp-content/uploads/2026/09/a"
+    eq(imgurl.rewrite(base .. ".jpg", 800), base .. ".jpg?imageMogr2/thumbnail/800x>",
+        "COS JPEG：thumbnail/800x> 只缩不放")
+    eq(imgurl.rewrite(base .. ".jpg", 480), base .. ".jpg?imageMogr2/thumbnail/480x>",
+        "COS：宽度可降级")
+    eq(imgurl.rewrite(base .. ".png", 800),
+        base .. ".png?imageMogr2/thumbnail/800x>/format/jpg/quality/75",
+        "COS PNG：走转 JPEG 配方")
+    eq(imgurl.rewrite(base .. ".jpg", 800, { gray = true }),
+        base .. ".jpg?imageMogr2/thumbnail/800x>/format/jpg/quality/75/colorspace/Gray",
+        "COS + 灰度：colorspace/Gray（实测可用）")
+    eq(imgurl.rewrite(base .. ".jpg?imageMogr2/auto-orient", 800),
+        base .. ".jpg?imageMogr2/thumbnail/800x>",
+        "COS：原有查询串被整段替换")
+    eq(imgurl.rewrite("https://b-1.cos.ap-shanghai.myqcloud.com/a/b.jpg", 800),
+        "https://b-1.cos.ap-shanghai.myqcloud.com/a/b.jpg?imageMogr2/thumbnail/800x>",
+        "COS：标准地域域名（cos.<region>.myqcloud.com）也命中")
+    eq(imgurl.rewrite("https://x.cos.ap-shanghai.myqcloud.com.evil.com/a.jpg", 800), nil,
+        "COS：相似域名 x.cos....myqcloud.com.evil.com 不匹配")
+    eq(imgurl.rewrite("https://example.myqcloud.com/a.jpg", 800), nil,
+        "COS：非 cos 的 myqcloud 域名不重写")
+    eq(imgurl.referer(base .. ".jpg"), nil, "COS 图片不需要 Referer")
+end
+
+----------------------------------------------------------------------
 -- 知乎（zhimg）：JPEG 不重写（_720w 已是缩略图，参数被 CDN 忽略）；
 -- GIF 换后缀 .gif→.jpg 让 CDN 返回首帧静态图（实测 8.6MB → 19.7KB）
 ----------------------------------------------------------------------
