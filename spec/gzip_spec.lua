@@ -122,5 +122,23 @@ do
 end
 
 ----------------------------------------------------------------------
+-- 防御上限：解压不可能无限循环（v0.1.15 之后新增）
+----------------------------------------------------------------------
+
+do
+    eq(gzip.MAX_ITERATIONS > 0, true, "有轮数上限")
+    eq(gzip.MAX_OUTPUT >= 16 * 1024 * 1024, true, "输出上限足够大（不影响正常 feed）")
+    -- 把上限调到 1 轮 + 小分块（169 字节需多轮），强制触发保护分支
+    local saved = gzip.MAX_ITERATIONS
+    gzip.MAX_ITERATIONS = 1
+    local plain, err = gzip.inflate(gz_data, { chunk = 16 })
+    eq(plain, nil, "达到轮数上限 → 返回 nil（不卡住）")
+    ok(tostring(err):find("解压异常", 1, true) ~= nil, "错误里点明解压异常", tostring(err))
+    gzip.MAX_ITERATIONS = saved
+    eq(gzip.inflate(gz_data), RAW, "恢复上限后仍能正常解压")
+    eq(gzip.inflate(gz_data, { chunk = 16 }), RAW, "小分块下也正确（多轮循环）")
+end
+
+----------------------------------------------------------------------
 print(("%d checks, %d failed"):format(checks, failed))
 if failed > 0 then os.exit(1) end

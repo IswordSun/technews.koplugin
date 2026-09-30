@@ -42,6 +42,10 @@ local gzip = {}
 
 -- 单次输出的块大小（避免为未知大小的解压结果一次性分配内存）
 gzip.CHUNK = 256 * 1024
+-- 解压的硬上限：正常情况下 2MB feed 解出 2MB（8 次循环），这里给足余量；
+-- 纯粹是防御——任何情况下解压都不能无限循环卡住界面
+gzip.MAX_OUTPUT = 64 * 1024 * 1024
+gzip.MAX_ITERATIONS = 4096
 
 -- gzip（RFC1952）/ zlib（RFC1950）/ 裸 deflate 三种窗口位
 local GZIP_BITS = 31       -- 16 + MAX_WBITS
@@ -104,11 +108,20 @@ local function inflate_with(lib, data, bits, chunk)
     strm.next_in = ffi.cast("Bytef *", data)
     strm.avail_in = #data
     local result, err
+    local produced_total, rounds = 0, 0
     while true do
+        rounds = rounds + 1
+        if rounds > gzip.MAX_ITERATIONS or produced_total > gzip.MAX_OUTPUT then
+            -- 防御：v0.1.15 之前没有这条，理论上畸形数据可能让循环不收敛
+            err = string.format("解压异常（%d 轮 / %d 字节后中止）",
+                rounds, produced_total)
+            break
+        end
         strm.next_out = buf
         strm.avail_out = chunk
         local ret = lib.inflate(strm, 0)   -- Z_NO_FLUSH
         local produced = chunk - tonumber(strm.avail_out)
+        produced_total = produced_total + produced
         if produced > 0 then
             out[#out + 1] = ffi.string(buf, produced)
         end
