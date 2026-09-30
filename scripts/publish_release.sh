@@ -4,6 +4,8 @@
 # 用法:  bash scripts/publish_release.sh [--notes-file <文件>]
 # 前置:  工作区干净；版本号单一来源 = zhifou.koplugin/main.lua 的 version
 # 产物:  GitHub Release v<版本>，资产 = zhifou.koplugin-v<版本>.zip
+# 说明:  发布说明优先取 docs/releases/v<版本>.md（不存在时用一句话兜底）；
+#         也可显式指定：--notes-file <文件>
 #        （v0.1.14 起发行包顶层目录为 zhifou.koplugin/；v0.1.13 及更早是过渡期的
 #          technews.koplugin/，更新器两种前缀都接受，见 updater.LEGACY_ASSET_PREFIX）
 # 备注:  直连 GitHub 超时时走代理：HTTPS_PROXY=http://127.0.0.1:1087 bash scripts/publish_release.sh
@@ -34,6 +36,9 @@ echo "打包完成: ${ZIP}（版本 ${TAG}）"
 
 if [ "${1:-}" = "--notes-file" ] && [ -n "${2:-}" ]; then
     NOTES_ARGS=(--notes-file "$2")
+elif [ -f "docs/releases/${TAG}.md" ]; then
+    NOTES_ARGS=(--notes-file "docs/releases/${TAG}.md")
+    echo "使用发布说明: docs/releases/${TAG}.md"
 else
     NOTES_ARGS=(--notes "发布 ${TAG}。设备端可在插件「设置 → 检查更新」中直接升级。")
 fi
