@@ -145,10 +145,14 @@ end
 -- 下载图片：按图床决定是否附带 Referer
 -- （少数派 cdnfile.sspai.com 不带 Referer 会 403；其余图床不带，见 imgurl.referer）
 local function download_image(url)
-    return http.get(url, nil, nil, nil, {
-        referer = imgurl.referer(url),
-        max_bytes = images.MAX_DOWNLOAD_BYTES,
-    })
+    -- 图片是可有可无的：重试 1 次、超时 10/25 秒（比 LARGE 的 3 次重试/30 秒更早止损），
+    -- 否则一个不可达的图床会让「单张」耗掉几分钟
+    return http.get(url,
+        images.DOWNLOAD_TIMEOUTS.block, images.DOWNLOAD_TIMEOUTS.total,
+        images.DOWNLOAD_RETRIES, {
+            referer = imgurl.referer(url),
+            max_bytes = images.MAX_DOWNLOAD_BYTES,
+        })
 end
 
 function TechNews:init()
@@ -1076,8 +1080,19 @@ end
 -- @return { items = {...}, images = { [url]= {data=, ext=} } } 或 (nil, 错误)
 --- RSS 源的抓取与内容块组装；返回条目数组，或 nil 与错误原因。
 -- range 为空时按严格今日窗口；否则按给定半开区间过滤（分源阅读的昨日/近一周/指定日）。
+--- 重试时更新进度并接受取消（返回 false 会让 http.get 停止重试）
+local function retry_progress(prefix, source_name)
+    return function(attempt)
+        return Trapper:info(string.format(
+            "%s正在连接 %s…失败，第 %d 次重试（点击可取消）",
+            prefix, source_name, attempt))
+    end
+end
+
 local function fetch_rss_items(source, max_items, prefix, range)
-    local xml, err = http.get(source.feed)
+    local xml, err = http.get(source.feed, nil, nil, nil, {
+        on_retry = retry_progress(prefix, source.name),
+    })
     if not xml then
         return nil, err
     end
@@ -1194,34 +1209,54 @@ function TechNews:fetchSource(source, limit, progress, range)
         local budget = (progress and progress.image_bytes_budget) or images.new_budget()
         local gray = self:withGrayImages()
         local deadline = progress and progress.deadline
+        local started_at = os.time()
+        -- 按图床记账：同一 host 连续失败到阈值就跳过它剩下的图
+        -- （个别图床在设备网络上不可达时，否则会一张一张地耗光整期时间）
+        local host_failures, host_circuit = {}, {}
         for i = 1, total do
-            -- 每 10 张查一次时钟：某源图片服务器装死时，别把整期时间耗在它身上
-            if deadline and i % 10 == 1 and os.time() > deadline then
+            -- 每张都查时钟：单张最坏也要几十秒，隔 10 张才查等于预算形同虚设
+            if deadline and os.time() > deadline then
                 hit_deadline = true
                 logger.warn("zhifou image deadline reached:", source.id,
                     "at", tostring(i), "of", tostring(total))
                 break
             end
             local url = pending[i].url
-            local msg = string.format("%s下载图片 %d/%d…（点击可取消）",
-                prefix, i, total)
+            local host = images.host_of(url)
+            local elapsed = os.time() - started_at
+            local msg = string.format("%s下载图片 %d/%d（已 %d 分 %d 秒）…（点击可取消）",
+                prefix, i, total, math.floor(elapsed / 60), elapsed % 60)
             if not Trapper:info(msg) then
                 return nil, "已取消"
             end
-            -- 重写（含灰度/转 JPEG）→ 下载 → 魔数判型 → 额度判定，全在 images.fetch 里
-            local image, img_err = images.fetch(url, {
-                download = download_image,
-                rewrite = imgurl.rewrite,
-                budget = budget,
-                gray = gray,
-            })
-            if image then
-                downloaded[url] = image
-            elseif img_err == "over_budget" then
-                -- 整期字节额度用尽：后面的图不再下载（张数与体积都要有闸门）
-                logger.info("zhifou image budget exhausted:", source.id,
-                    "at", tostring(i), "of", tostring(total))
-                break
+            if host and host_circuit[host] then
+                -- 该图床已熔断：不再尝试，直接跳过（计入略过数）
+                budget:note_skip("host_down")
+            else
+                -- 重写（含灰度/转 JPEG）→ 下载 → 魔数判型 → 额度判定，全在 images.fetch 里
+                local image, img_err = images.fetch(url, {
+                    download = download_image,
+                    rewrite = imgurl.rewrite,
+                    budget = budget,
+                    gray = gray,
+                })
+                if image then
+                    if host then host_failures[host] = 0 end
+                    downloaded[url] = image
+                elseif img_err == "over_budget" then
+                    -- 整期字节额度用尽：后面的图不再下载（张数与体积都要有闸门）
+                    logger.info("zhifou image budget exhausted:", source.id,
+                        "at", tostring(i), "of", tostring(total))
+                    break
+                elseif host and images.is_host_failure(img_err) then
+                    host_failures[host] = (host_failures[host] or 0) + 1
+                    if host_failures[host] >= images.MAX_HOST_FAILURES then
+                        host_circuit[host] = true
+                        logger.warn("zhifou image host circuit open:", host,
+                            "after", tostring(host_failures[host]), "failures;",
+                            "skipping the rest from this host")
+                    end
+                end
             end
         end
         local summary = budget:summary()

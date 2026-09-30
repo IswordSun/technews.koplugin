@@ -19,6 +19,42 @@ images.WIDTHS = { 800, 480 }
 -- 下载阶段的硬上限：超过就让 LuaSocket 中断传输（不必把整张巨图读进内存），
 -- 之后由额度逻辑判为 too_large 并降档重试或略过
 images.MAX_DOWNLOAD_BYTES = 3 * 1024 * 1024
+-- 图片下载的重试次数：图片是「可有可无」的，重试代价却是整轮超时
+-- （默认 3 次重试 = 最多 4 次尝试 × 30s），所以只给 1 次重试
+images.DOWNLOAD_RETRIES = 1
+-- 图片下载超时（秒）：800px 的图在弱网下也够用，比 LARGE(10/30) 更早止损
+images.DOWNLOAD_TIMEOUTS = { block = 10, total = 25 }
+-- 同一图床连续失败多少次后，跳过它剩下的图（熔断）
+images.MAX_HOST_FAILURES = 3
+
+--- 失败原因分类：
+--   "size"   这张图太大 / CDN 不接受该缩放参数（HTTP 400）→ 换更小宽度有意义
+--   "image"  返回的不是图片（HTML 错误页）→ 换宽度也没用
+--   "budget" 整期额度用尽 → 由调用方停止后续下载
+--   "host"   连接层失败或其它 HTTP 状态错误 → 视为图床层面问题（熔断计数）
+--   "unknown" 原因缺失（正常路径不会走到）→ 不触发熔断
+function images.classify_failure(reason)
+    if reason == nil then return "unknown" end
+    reason = tostring(reason)
+    if reason == "too_large" then return "size" end
+    if reason == "not_image" then return "image" end
+    if reason == "over_budget" then return "budget" end
+    -- 下载被硬上限中断：本质是「这张图太大」，降宽度值得一试
+    if reason:find("响应过大", 1, true) then return "size" end
+    -- 图床对该图的缩放参数报 400（实测 IT之家/百度 BCE 的超高图）→ 降宽度
+    if reason == "HTTP 400" then return "size" end
+    return "host"   -- 连接失败（timeout/closed）、403/404、5xx 等
+end
+
+--- 该失败是否算「图床不可用」（用于熔断计数与跳过该图床剩余图片）
+function images.is_host_failure(reason)
+    return images.classify_failure(reason) == "host"
+end
+
+--- 从图片 URL 取主机名（熔断按主机记账）
+function images.host_of(url)
+    return type(url) == "string" and url:match("^https?://([^/]+)") or nil
+end
 
 --- 按魔数判定图片类型；不是图片（HTML 错误页、空响应）返回 nil。
 -- @return "jpg" | "png" | "gif" | "webp" | nil
@@ -128,6 +164,13 @@ function images.fetch(url, opts)
             last_err = "too_large"  -- 单张超限：继续试更小的宽度
         else
             last_err = err or "下载失败"
+            if images.classify_failure(last_err) ~= "size" then
+                -- 图床层面失败（连不上/超时/403 等）：换更小的宽度也没用，
+                -- 只会把每一次失败再乘一遍重试与超时，直接收手交给熔断
+                if budget then budget:note_skip(last_err) end
+                return nil, last_err
+            end
+            -- size：继续试更小的宽度
         end
         if index == #targets and budget then
             budget:note_skip(last_err)

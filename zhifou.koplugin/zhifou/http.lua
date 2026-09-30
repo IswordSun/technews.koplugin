@@ -173,6 +173,7 @@ end
 --   referer        随请求发送 Referer 头（图床防盗链用）
 --   max_bytes      响应体字节上限（默认 http.MAX_RESPONSE_BYTES）
 --   allow_truncated 超限时把已收到的部分当成功返回（只关心「通不通」的自检用）
+--   on_retry       每次重试前回调 (attempt, err)；返回 false 立即放弃（视为「已取消」）
 -- 重试策略：连接层失败与 5xx/408/425/429 重试；其余 4xx 立即返回
 -- （失效 feed 的 404、图床 403 重试无意义）。退避为指数 + 抖动，
 -- 429 若带 Retry-After 则优先听服务端的（钳制到 10 秒内）。
@@ -194,6 +195,17 @@ function http.get(url, block_timeout, total_timeout, retries, opts)
         end
         -- 退避：0.5 / 1 / 2 秒（上限 MAX_BACKOFF）+ 0~250ms 抖动，
         -- 避免多个源同时失败后同步重试（惊群）
+        -- 重试前先问调用方：返回 false 表示用户取消（或不想再试），立即收手。
+        -- 用途：进度框可以显示「第 N 次重试」并让取消真正生效——否则请求不返回时，
+        -- 界面只有一行「正在连接…」，用户既不知道在重试也没法中断。
+        if opts.on_retry then
+            local cont = opts.on_retry(attempt, err)
+            if cont == false then
+                logger.warn("zhifou http retry aborted by caller:", url,
+                    "attempt=" .. attempt)
+                return nil, "已取消"
+            end
+        end
         local delay = math.min(0.5 * 2 ^ (attempt - 1), http.MAX_BACKOFF)
         local wait = retry_after_seconds(meta and meta.headers)
         if wait == nil then

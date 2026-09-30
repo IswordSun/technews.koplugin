@@ -281,6 +281,45 @@ do
 end
 
 ----------------------------------------------------------------------
+-- 5b) 重试回调：每次重试前通知调用方；返回 false 立即放弃
+----------------------------------------------------------------------
+
+do
+    reset()
+    transport.request = flaky_responder(500, {}, "ok")
+    local seen = {}
+    local body = http.get("https://example.com/flaky-visible", nil, nil, 3, {
+        on_retry = function(attempt, err)
+            seen[#seen + 1] = { attempt = attempt, err = err }
+            return true
+        end,
+    })
+    eq(body, "ok", "带 on_retry 时仍能重试成功")
+    eq(#seen, 1, "重试回调被调用一次")
+    eq(seen[1].attempt, 1, "回调带上第几次重试")
+    eq(seen[1].err, "HTTP 500", "回调带上失败原因")
+    transport.request = fake_request
+end
+
+do
+    reset()
+    transport.request = function(req)
+        calls[#calls + 1] = { url = req.url, headers = req.headers }
+        return nil, "closed"
+    end
+    local callbacks = 0
+    local body, err = http.get("https://example.com/cancel-retry", nil, nil, 3, {
+        on_retry = function() callbacks = callbacks + 1; return false end,
+    })
+    eq(body, nil, "回调返回 false → 放弃")
+    eq(err, "已取消", "错误信息为「已取消」（与用户取消同一语义）")
+    eq(callbacks, 1, "回调只被问一次（之后不再重试）")
+    eq(#calls, 1, "放弃后不再发请求")
+    eq(#sleeps, 0, "放弃后也不退避")
+    transport.request = fake_request
+end
+
+----------------------------------------------------------------------
 -- 6) 响应体字节上限：超限中断传输，且不重试
 ----------------------------------------------------------------------
 

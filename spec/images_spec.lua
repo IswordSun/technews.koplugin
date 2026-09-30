@@ -225,5 +225,77 @@ do
 end
 
 ----------------------------------------------------------------------
+-- 失败分类（熔断用）：只有「这张图本身的问题」才不算图床故障
+----------------------------------------------------------------------
+
+do
+    eq(images.is_host_failure("连接失败（timeout）"), true, "连接超时 → 算图床故障")
+    eq(images.is_host_failure("HTTP 403"), true, "HTTP 403 → 算图床故障（如缺 Referer）")
+    eq(images.is_host_failure("响应过大（超过 3145728 字节已中止）"), false,
+        "响应过大（被中断）→ 不算图床故障（降宽度可解）")
+    eq(images.classify_failure("响应过大（超过 3145728 字节已中止）"), "size",
+        "响应过大 → 归类为 size（值得降档）")
+    eq(images.classify_failure("HTTP 400"), "size",
+        "HTTP 400 → 归类为 size（CDN 不接受该图缩放参数）")
+    eq(images.classify_failure("HTTP 404"), "host", "HTTP 404 → 归类为 host")
+    eq(images.classify_failure("too_large"), "size", "单张超限 → size（换宽度可解）")
+    eq(images.classify_failure("not_image"), "image", "非图片 → image")
+    eq(images.classify_failure("over_budget"), "budget", "额度耗尽 → budget")
+    eq(images.is_host_failure("not_image"), false, "返回的不是图片 → 不算（换宽度也没用）")
+    eq(images.is_host_failure("over_budget"), false, "整期额度耗尽 → 不算")
+    eq(images.is_host_failure(nil), false, "nil → 不算（unknown 不触发熔断）")
+    eq(images.MAX_HOST_FAILURES, 3, "熔断阈值 3 次")
+    eq(images.DOWNLOAD_RETRIES, 1, "图片下载只重试 1 次")
+    eq(images.DOWNLOAD_TIMEOUTS.total, 25, "图片下载总超时 25 秒")
+end
+
+----------------------------------------------------------------------
+-- 主机名解析（熔断按主机记账）
+----------------------------------------------------------------------
+
+do
+    eq(images.host_of("https://s3.ifanr.com/a/b.png?x=1"), "s3.ifanr.com", "取 https 主机名")
+    eq(images.host_of("http://img.example.com/a.jpg"), "img.example.com", "取 http 主机名")
+    eq(images.host_of("not a url"), nil, "非 URL → nil")
+    eq(images.host_of(nil), nil, "nil → nil")
+end
+
+----------------------------------------------------------------------
+-- 网络层失败不再降档重试（这是「一张图耗几分钟」的放大器）
+----------------------------------------------------------------------
+
+do
+    -- 两个宽度都可用，但下载直接连接失败：只应尝试一次（不再试 480）
+    local attempts = {}
+    local result, err = images.fetch("https://img.example.com/a.jpg", {
+        rewrite = function(url, width) return url .. "?w=" .. width end,
+        download = function(target)
+            attempts[#attempts + 1] = target
+            return nil, "连接失败（timeout）"
+        end,
+    })
+    eq(result, nil, "连接失败 → 无图")
+    eq(err, "连接失败（timeout）", "错误原因原样返回（供熔断计数）")
+    eq(#attempts, 1, "连接失败只尝试一次（不再退到 480 宽）")
+    ok(attempts[1]:find("w=800", 1, true) ~= nil, "尝试的是 800 宽")
+
+    -- 对照：单张太大 → 仍应降档到 480
+    local attempts2 = {}
+    local big = sample("jpg", 2100)   -- 合法 JPEG 魔数 + 超限体积
+    local result2, err2 = images.fetch("https://img.example.com/big.jpg", {
+        rewrite = function(url, width) return url .. "?w=" .. width end,
+        budget = images.new_budget({ max_image_bytes = 1024, max_total_bytes = 10 * 1024 }),
+        download = function(target)
+            attempts2[#attempts2 + 1] = target
+            return big, nil
+        end,
+    })
+    eq(result2, nil, "单张超限 → 最终无图")
+    eq(err2, "too_large", "原因是 too_large")
+    eq(#attempts2, 2, "单张超限会降到 480 宽再试（与网络失败区分开）")
+    ok(attempts2[2]:find("w=480", 1, true) ~= nil, "第二次尝试 480 宽")
+end
+
+----------------------------------------------------------------------
 print(("%d checks, %d failed"):format(checks, failed))
 if failed > 0 then os.exit(1) end
