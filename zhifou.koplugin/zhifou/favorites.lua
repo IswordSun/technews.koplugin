@@ -85,11 +85,40 @@ end
 -- 图片扩展名不再从 URL 推断：CDN 会换格式（PNG 源返回 JPEG），
 -- 一律以响应字节的魔数为准（zhifou/images.lua 的 ext_from_data）
 
+-- 索引解析缓存：一次菜单渲染会多次调用 load()（首页/收藏菜单/定位都各来一次），
+-- 每次都 loadfile + 执行 + 排序纯属浪费。按「路径 + mtime + 大小」判定新鲜度，
+-- 写入路径（save / preserve_broken_index）显式失效——同一秒内改写时 mtime 不变，
+-- 只靠 stat 会读到陈旧缓存。
+local index_cache = { mtime = nil, size = nil, list = nil }
+
+--- 让索引缓存失效（save 与损坏备份后调用）
+function favorites.invalidate_index_cache()
+    index_cache.mtime, index_cache.size, index_cache.list = nil, nil, nil
+end
+
+local function index_stat()
+    local attr = lfs.attributes(favorites.index_path)
+    if type(attr) ~= "table" then return nil, nil end
+    return attr.modification, attr.size
+end
+
 --- 读取索引，按收藏时间倒序；文件缺失/损坏时返回空数组。
 -- 损坏（文件在但解析失败）**不会**静默清空：先把原索引改名备份为
 -- favorites.lua.broken-<时间戳>，再返回空表；否则下一次收藏/删除会以空表为基准
 -- 全量覆盖写回，历史收藏就此从索引里永久消失（快照文件还在，界面再也看不到）。
+-- 命中缓存时返回浅拷贝：调用方（菜单/排序）拿到独立数组，不会互相串改。
 function favorites.load()
+    local mtime, size = index_stat()
+    -- 拿不到 mtime 与 size（异常文件系统/桩实现）时不缓存：宁可多解析一次，
+    -- 也不能把陈旧索引当成最新（那会导致下一次 save 全量覆盖、收藏丢失）
+    local cacheable = mtime ~= nil and size ~= nil
+    if cacheable and index_cache.list
+        and mtime == index_cache.mtime and size == index_cache.size then
+        local copy = {}
+        for i, entry in ipairs(index_cache.list) do copy[i] = entry end
+        return copy
+    end
+
     local list = {}
     local chunk, load_err = loadfile(favorites.index_path)
     if chunk then
@@ -116,7 +145,14 @@ function favorites.load()
     table.sort(list, function(a, b)
         return (tonumber(a.favorited_at) or 0) > (tonumber(b.favorited_at) or 0)
     end)
-    return list
+    if cacheable then
+        index_cache.mtime, index_cache.size, index_cache.list = mtime, size, list
+    else
+        favorites.invalidate_index_cache()
+    end
+    local copy = {}
+    for i, entry in ipairs(list) do copy[i] = entry end
+    return copy
 end
 
 --- 备份损坏的索引文件，并记下给用户看的一次性提示。
@@ -128,6 +164,7 @@ function favorites.preserve_broken_index(reason)
     local backup = favorites.index_path .. ".broken-"
         .. os.date("%Y%m%d-%H%M%S")
     local renamed = os.rename(favorites.index_path, backup)
+    favorites.invalidate_index_cache()
     if renamed then
         favorites._broken_backup = backup
         logger.warn("zhifou favorites index corrupt, backed up to:", backup, reason)
@@ -261,6 +298,7 @@ function favorites.save(list)
         os.remove(tmp_path)
         return nil, rename_err
     end
+    favorites.invalidate_index_cache()
     return true
 end
 
@@ -301,18 +339,50 @@ function favorites.write_sidecar(epub_path, title, date, items)
         logger.warn("zhifou sidecar write failed:", tostring(err))
         return nil, tostring(err)
     end
+    favorites.invalidate_sidecar_cache(epub_path)
     return true
 end
 
 --- 读取 sidecar；不存在/损坏返回 nil
+-- sidecar 解析缓存（同样按路径 + mtime + 大小判定；构建期写入后显式失效）。
+-- 阅读器里打开「⋯」菜单、收藏定位都会读它，而 sidecar 含整期条目与内容块，
+-- 每次重新 loadfile 一遍在低配设备上是可感知的卡顿。
+local sidecar_cache = {}
+
+function favorites.invalidate_sidecar_cache(epub_path)
+    if epub_path then
+        sidecar_cache[epub_path] = nil
+    else
+        sidecar_cache = {}
+    end
+end
+
 function favorites.load_sidecar(epub_path)
     if not epub_path or epub_path == "" then return nil end
-    local chunk = loadfile(epub_path .. ".items.lua")
-    if not chunk then return nil end
+    local path = epub_path .. ".items.lua"
+    local attr = lfs.attributes(path)
+    local mtime = type(attr) == "table" and attr.modification or nil
+    local size = type(attr) == "table" and attr.size or nil
+    local cached = sidecar_cache[epub_path]
+    -- 同索引：mtime 与 size 都拿得到才用缓存
+    if cached and mtime and size and cached.mtime == mtime and cached.size == size then
+        return cached.data
+    end
+    local chunk = loadfile(path)
+    if not chunk then
+        sidecar_cache[epub_path] = nil
+        return nil
+    end
     local ok, data = pcall(chunk)
     if not ok or type(data) ~= "table" or type(data.items) ~= "table" then
         logger.warn("zhifou sidecar unreadable:", epub_path, tostring(data))
+        sidecar_cache[epub_path] = nil
         return nil
+    end
+    if mtime and size then
+        sidecar_cache[epub_path] = { mtime = mtime, size = size, data = data }
+    else
+        sidecar_cache[epub_path] = nil
     end
     return data
 end

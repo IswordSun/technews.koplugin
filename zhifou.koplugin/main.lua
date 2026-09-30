@@ -15,6 +15,7 @@ local Device = require("device")
 local Dispatcher = require("dispatcher")
 local Font = require("ui/font")
 local InfoMessage = require("ui/widget/infomessage")
+local TextViewer = require("ui/widget/textviewer")
 local TextWidget = require("ui/widget/textwidget")
 local Trapper = require("ui/trapper")
 local UIManager = require("ui/uimanager")
@@ -537,6 +538,64 @@ function TechNews:getSourceSettingItems()
     return items
 end
 
+--- 源连通性自检：逐个源发一个小请求（截断到 64KB，只判「通不通」），
+-- 结果一次性列出——省去「改设置 → 抓一次 → 看哪个源失败」的来回试。
+-- 注意只看 feed 可达性，不解析、不抓正文、不生成期文件。
+function TechNews:checkSourceConnectivity()
+    local sources = subscriptions.enabled(registry, self:sourceSetting())
+    if #sources == 0 then
+        UIManager:show(InfoMessage:new{ text = "尚未订阅任何源（去「订阅源设置」勾选）" })
+        return
+    end
+    local socket = require("socket")
+    local now = socket.gettime or os.time
+    local lines, slowest = {}, nil
+    local reachable, probed = 0, 0
+    for i, source in ipairs(sources) do
+        if not Trapper:info(string.format("源连通性自检 %d/%d：%s…（点击可取消）",
+                i, #sources, source.name)) then
+            return
+        end
+        if not source.feed then
+            lines[#lines + 1] = string.format("· %s：自定义源，跳过（%s）",
+                source.name, source.mode or "?")
+        else
+            probed = probed + 1
+            local started = now()
+            local ok, body, err = pcall(http.get, source.feed, 10, 20, 0, {
+                max_bytes = 64 * 1024, allow_truncated = true,
+            })
+            if not ok then
+                body, err = nil, "探测异常：" .. tostring(body)
+            end
+            local elapsed = now() - started
+            if body then
+                reachable = reachable + 1
+                lines[#lines + 1] = string.format("✓ %s：%.1f 秒", source.name, elapsed)
+                if not slowest or elapsed > slowest.elapsed then
+                    slowest = { name = source.name, elapsed = elapsed }
+                end
+            else
+                lines[#lines + 1] = string.format("✗ %s：%s", source.name, tostring(err))
+            end
+        end
+    end
+    local head = string.format("可达 %d/%d", reachable, probed)
+    if probed < #sources then
+        head = head .. string.format("（另 %d 个自定义源未探测）", #sources - probed)
+    end
+    if slowest then
+        head = head .. string.format("；最慢 %s（%.1f 秒）", slowest.name, slowest.elapsed)
+    end
+    local msg = head .. "\n\n" .. table.concat(lines, "\n")
+        .. "\n\n（仅探测订阅源入口是否可达，不代表正文抽取正常）"
+    logger.info("zhifou connectivity:", head)
+    UIManager:show(TextViewer:new{
+        title = "源连通性自检",
+        text = msg,
+    })
+end
+
 --- 「设置」子菜单：管理收藏（仅有收藏时）、订阅源设置、包含图片、清理全部缓存
 function TechNews:getSettingItems()
     local items = {}
@@ -552,6 +611,13 @@ function TechNews:getSettingItems()
         text = "订阅源设置",
         sub_item_table_func = function()
             return self:getSourceSettingItems()
+        end,
+    }
+    items[#items + 1] = {
+        text = "源连通性自检",
+        keep_menu_open = true,
+        callback = function()
+            self:checkSourceConnectivity()
         end,
     }
     items[#items + 1] = {

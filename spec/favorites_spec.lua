@@ -215,6 +215,56 @@ do
     eq(list[1].title, "新", "load：按收藏时间倒序")
     eq(list[2].title, "旧", "load：字符串时间不抛错（tonumber 保护）")
 
+    -- 1b) 缓存语义：mtime+size 齐备时命中缓存；写入路径显式失效
+    do
+        -- 该 stub 不提供 size → 不缓存（每次都重新解析）
+        stub_lfs.attributes = function(path, what)
+            if not file_exists(path) then return nil end
+            if what == "mode" then return "file" end
+            return { mode = "file", modification = os.time() }
+        end
+        favorites.invalidate_index_cache()
+        write_index('return { { title = "甲", favorited_at = 1 } }')
+        eq(#favorites.load(), 1, "无 size 时不走缓存：读到 1 条")
+        write_index('return { { title = "甲", favorited_at = 1 }, { title = "乙", favorited_at = 2 } }')
+        eq(#favorites.load(), 2, "无 size 时第二次也重新解析（不会读到陈旧缓存）")
+
+        -- 提供 size：应命中缓存，且 save 后立即失效
+        local function stat_with_size(path, what)
+            local f = io.open(path, "rb")
+            if not f then return nil end
+            local data = f:read("*a")
+            f:close()
+            if not data then return nil end   -- 目录等读不出内容的情形
+            if what == "mode" then return "file" end
+            return { mode = "file", modification = 12345, size = #data }
+        end
+        stub_lfs.attributes = stat_with_size
+        favorites.invalidate_index_cache()
+        eq(#favorites.load(), 2, "有 size：首次解析读到 2 条")
+        write_index('return { { title = "甲", favorited_at = 1 } }')
+        eq(#favorites.load(), 1,
+            "有 size 时按 size 变化判定新鲜度（同秒改写也能发现）")
+
+        -- 同尺寸改写：stat 发现不了（mtime 被桩固定、size 也没变），
+        -- 此时靠写入路径显式失效（save / preserve_broken_index 都会调用）
+        write_index('return { { title = "丙", favorited_at = 3 }, { title = "甲", favorited_at = 1 } }')
+        eq(favorites.load()[1].title, "丙", "先读到丙")
+        write_index('return { { title = "丁", favorited_at = 3 }, { title = "甲", favorited_at = 1 } }')
+        eq(#favorites.load(), 2, "同尺寸改写仍能读回（条数不变）")
+        eq(favorites.load()[1].title, "丙",
+            "同尺寸改写：仅靠 stat 会命中缓存（已知边界，靠写入失效兜底）")
+        favorites.invalidate_index_cache()
+        eq(favorites.load()[1].title, "丁",
+            "显式失效后读到新内容（save/损坏备份走的就是这条路径）")
+        stub_lfs.attributes = function(path, what)
+            if not file_exists(path) then return nil end
+            if what == "mode" then return "file" end
+            return { mode = "file", modification = os.time() }
+        end
+        favorites.invalidate_index_cache()
+    end
+
     -- 2) 损坏索引：原文件先备份，再以空表继续，并留下一次性提示
     write_index('return { { title = "被截断')
     favorites._broken_handled, favorites._broken_backup, favorites._notice = nil, nil, nil
