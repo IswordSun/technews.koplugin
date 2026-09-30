@@ -84,7 +84,7 @@ local FETCH_BUDGET_SECONDS = 300
 local TechNews = WidgetContainer:extend{
     name = "zhifou",
     is_doc_only = false,
-    version = "0.1.20",
+    version = "0.1.21",
 }
 
 -- 自测只执行一次：插件用 dofile 加载，模块级变量会随 UI 重建被重置，
@@ -583,19 +583,35 @@ end
 --- 源连通性自检：逐个源发一个小请求（截断到 64KB，只判「通不通」），
 -- 结果一次性列出——省去「改设置 → 抓一次 → 看哪个源失败」的来回试。
 -- 注意只看 feed 可达性，不解析、不抓正文、不生成期文件。
+--- 文本进度条。用 ASCII（[####----]）：实测 ▓░ 这两个方块字符在 KOReader 的
+-- 字体里会渲染成斜纹，看不清。
+local function progress_bar(done, total, width)
+    width = width or 12
+    if not total or total <= 0 then return "[" .. string.rep("-", width) .. "]" end
+    local filled = math.floor(done * width / total + 0.5)
+    if filled > width then filled = width end
+    if filled < 0 then filled = 0 end
+    return "[" .. string.rep("#", filled) .. string.rep("-", width - filled) .. "]"
+end
+
 function TechNews:checkSourceConnectivity()
     local sources = subscriptions.enabled(registry, self:sourceSetting())
     if #sources == 0 then
         UIManager:show(InfoMessage:new{ text = "尚未订阅任何源（去「订阅源设置」勾选）" })
         return
     end
+    -- 必须包在 Trapper:wrap 里：否则 Trapper:info 走的是「未包装」分支（主线程没有
+    -- 协程），整段自检一条提示都不会显示——13 个源逐个探测时就看着像死机。
+    Trapper:wrap(function()
     local socket = require("socket")
     local now = socket.gettime or os.time
     local lines, slowest = {}, nil
     local reachable, probed = 0, 0
+    local started_all = now()
     for i, source in ipairs(sources) do
-        if not Trapper:info(string.format("源连通性自检 %d/%d：%s…（点击可取消）",
-                i, #sources, source.name)) then
+        if not Trapper:info(string.format("%s 源连通性自检 %d/%d：%s…（已 %d 秒，点击可取消）",
+                progress_bar(i - 1, #sources), i, #sources, source.name,
+                math.floor(now() - started_all))) then
             return
         end
         if not source.feed then
@@ -632,10 +648,12 @@ function TechNews:checkSourceConnectivity()
     local msg = head .. "\n\n" .. table.concat(lines, "\n")
         .. "\n\n（仅探测订阅源入口是否可达，不代表正文抽取正常）"
     logger.info("zhifou connectivity:", head)
+    Trapper:clear()   -- 先关掉进度框，否则结果窗口会叠在它上面
     UIManager:show(TextViewer:new{
         title = "源连通性自检",
         text = msg,
     })
+    end)
 end
 
 --- 生成诊断报告文本（纯探测，不碰 UI）。
@@ -694,7 +712,7 @@ function TechNews:runNetworkDiagnosis()
             local ok, report = pcall(build_diag_report, targets)
             if not ok then return "诊断异常（子进程）：" .. tostring(report) end
             return report
-        end, "网络诊断中…（点击可取消）", true)
+        end, "网络诊断中…（逐个目标探测，约十几秒；点击可取消）", true)
         if not completed then
             UIManager:show(InfoMessage:new{ text = "诊断已取消", timeout = 2 })
             return
