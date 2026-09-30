@@ -297,5 +297,49 @@ do
 end
 
 ----------------------------------------------------------------------
+-- 图片分辨率：目标宽 → 候选宽度表（设置里可配；设备屏宽不同，需求不同）
+----------------------------------------------------------------------
+
+do
+    -- 默认行为必须与之前一致（800 → 480），否则老设备上的观感与流量会突变
+    local t = images.widths_for(nil)
+    eq(t[1], 800, "未配置时目标宽 800")
+    eq(t[2], 480, "未配置时降档 480（与旧行为一致）")
+    eq(#images.WIDTHS, 2, "默认候选表两项")
+    eq(images.WIDTHS[1], 800, "images.WIDTHS 目标宽 800")
+    eq(images.WIDTHS[2], 480, "images.WIDTHS 降档 480")
+
+    local big = images.widths_for(1404)          -- Boox Nova3 屏宽
+    eq(big[1], 1404, "自动档：按屏宽取值")
+    eq(big[2], 842, "降档 = 目标宽 × 0.6")
+    ok(big[2] < big[1], "降档一定更小")
+
+    eq(images.widths_for(480)[2], 288, "480 → 288")
+    eq(images.widths_for(1200)[2], 720, "1200 → 720")
+
+    -- 边界：过小抬到下限、过大压到上限、非法值回默认、降档可低于目标下限
+    eq(images.widths_for(100)[1], images.MIN_WIDTH, "过小的目标宽抬到下限")
+    eq(images.widths_for(9999)[1], images.MAX_WIDTH, "过大的目标宽压到上限")
+    eq(images.widths_for("abc")[1], images.DEFAULT_WIDTH, "非法值回默认 800")
+    local tiny = images.widths_for(images.MIN_WIDTH)
+    ok(tiny[2] < tiny[1], "极小目标宽的降档仍更小")
+    ok(tiny[2] >= images.MIN_DEGRADE_WIDTH, "降档不低于降档下限")
+end
+
+----------------------------------------------------------------------
+-- 分辨率真的会进入 CDN 配方（换档必须改变实际请求的 URL）
+----------------------------------------------------------------------
+
+do
+    local imgurl = dofile(spec_dir .. "/../zhifou.koplugin/zhifou/imgurl.lua")
+    local src = "https://s3.ifanr.com/wp-content/uploads/2026/09/pic.jpg"
+    local w1000 = imgurl.rewrite(src, images.widths_for(1000)[1])
+    local w480 = imgurl.rewrite(src, images.widths_for(480)[1])
+    ok(w1000:find("w/1000", 1, true) ~= nil, "1000 档写进七牛配方", tostring(w1000))
+    ok(w480:find("w/480", 1, true) ~= nil, "480 档写进七牛配方", tostring(w480))
+    ok(w1000 ~= w480, "不同档位产生不同 URL")
+end
+
+----------------------------------------------------------------------
 print(("%d checks, %d failed"):format(checks, failed))
 if failed > 0 then os.exit(1) end

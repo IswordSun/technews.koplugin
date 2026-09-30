@@ -457,7 +457,8 @@ end
 --- 收藏一篇文章为单篇快照 EPUB。
 -- @param progress_cb 可选：进度回调，返回 false 表示用户取消
 -- @param with_gray 可选：图片转灰度（与设置里的开关一致；仅下载回退路径用得上）
-function favorites.add(article, issue_path, progress_cb, with_gray)
+-- @param widths 可选：候选宽度表（images.widths_for；与设置里的图片分辨率一致）
+function favorites.add(article, issue_path, progress_cb, with_gray, widths)
     if not article or not article.title then
         return nil, "缺少文章信息"
     end
@@ -504,6 +505,7 @@ function favorites.add(article, issue_path, progress_cb, with_gray)
                 rewrite = imgurl.rewrite,
                 budget = budget,
                 gray = with_gray,
+                widths = widths,
             })
             if image then
                 image_map[url] = image

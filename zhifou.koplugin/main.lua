@@ -84,7 +84,7 @@ local FETCH_BUDGET_SECONDS = 300
 local TechNews = WidgetContainer:extend{
     name = "zhifou",
     is_doc_only = false,
-    version = "0.1.21",
+    version = "0.1.22",
 }
 
 -- 自测只执行一次：插件用 dofile 加载，模块级变量会随 UI 重建被重置，
@@ -285,6 +285,43 @@ end
 
 --- 图片是否转灰度（默认开：墨水屏上彩色没有意义，灰度 JPEG 更小；
 -- 支持的图床见 imgurl 的 gray_recipe，不支持的自动作罢）
+--- 图片分辨率设置：读回用户选的宽度；返回 nil 表示「自动（按屏幕宽度）」
+function TechNews:imageWidthSetting()
+    local value = G_reader_settings:readSetting("zhifou_image_width")
+    if value == nil or value == "auto" then return nil end
+    return tonumber(value)
+end
+
+--- 「自动」档：按设备屏幕宽度取（不同设备屏宽不同，这是默认行为）
+function TechNews:autoImageWidth()
+    local ok, width = pcall(function()
+        return require("device").screen:getWidth()
+    end)
+    if ok and type(width) == "number" and width > 0 then return width end
+    return images.DEFAULT_WIDTH
+end
+
+--- 当前生效的图片目标宽度（设置 → 图片分辨率）
+function TechNews:imageTargetWidth()
+    return self:imageWidthSetting() or self:autoImageWidth()
+end
+
+--- 当前生效的候选宽度表（目标宽 → 降档宽）
+function TechNews:imageWidths()
+    return images.widths_for(self:imageTargetWidth())
+end
+
+--- 保存图片分辨率；改完当天缓存作废（与图片开关同样的语义）
+-- @param value 数字（像素宽）或 nil（自动）
+function TechNews:setImageWidth(value)
+    if value == nil then
+        G_reader_settings:delSetting("zhifou_image_width")
+    else
+        G_reader_settings:saveSetting("zhifou_image_width", tonumber(value))
+    end
+    storage:clear_date(today_str())
+end
+
 function TechNews:withGrayImages()
     return G_reader_settings:readSetting("zhifou_gray_images") ~= false
 end
@@ -741,10 +778,11 @@ end
 function TechNews:getSettingItems()
     local items = {}
 
-    -- 1) 显示相关（两个复选框收进一层）
+    -- 1) 图片显示：开关 + 分辨率（设备屏宽不同，分辨率需要可调）
     items[#items + 1] = {
-        text = "图片与显示",
-        sub_item_table = {
+        text = "图片显示",
+        sub_item_table_func = function()
+            return {
             {
                 text = "包含图片",
                 keep_menu_open = true,
@@ -771,7 +809,56 @@ function TechNews:getSettingItems()
                     storage:clear_date(today_str())
                 end,
             },
-        },
+            {
+                text = "图片分辨率",
+                sub_item_table_func = function()
+                    local auto_width = self:autoImageWidth()
+                    -- 选中标记用 ☑/☐ 写进文字里：KOReader 的 RadioMark 用 ◉/◯
+                    -- 两个 Unicode 符号，这套字体里没有（实测渲染成空白），
+                    -- 与菜单里其它复选框保持一致反而更可靠
+                    local function mark(selected)
+                        return selected and "☑ " or "☐ "
+                    end
+                    local entries = {
+                        {
+                            text_func = function()
+                                return mark(self:imageWidthSetting() == nil)
+                                    .. string.format("自动（按屏幕宽度 · %d px）",
+                                        auto_width)
+                            end,
+                            keep_menu_open = true,
+                            callback = function()
+                                self:setImageWidth(nil)
+                            end,
+                        },
+                    }
+                    for _, width in ipairs(images.PRESET_WIDTHS) do
+                        entries[#entries + 1] = {
+                            text_func = function()
+                                return mark(self:imageWidthSetting() == width)
+                                    .. string.format("%d px%s", width,
+                                        width == images.DEFAULT_WIDTH
+                                            and "（默认）" or "")
+                            end,
+                            keep_menu_open = true,
+                            callback = function()
+                                self:setImageWidth(width)
+                            end,
+                        }
+                    end
+                    entries[#entries + 1] = {
+                        text = "越宽越清晰、流量越大",
+                        enabled = false,
+                    }
+                    entries[#entries + 1] = {
+                        text = "换档后当天缓存清空",
+                        enabled = false,
+                    }
+                    return entries
+                end,
+            },
+            }
+        end,
     }
 
     -- 2) 订阅源相关
@@ -1402,6 +1489,8 @@ function TechNews:fetchSource(source, limit, progress, range)
         -- 字节额度：合并期跨源共享（调用方传入同一个 budget 才生效）
         local budget = (progress and progress.image_bytes_budget) or images.new_budget()
         local gray = self:withGrayImages()
+        -- 图片分辨率（设置 → 图片显示 → 图片分辨率）：目标宽 → 降档宽
+        local target_widths = self:imageWidths()
         local deadline = progress and progress.deadline
         local started_at = os.time()
         -- 按图床记账：同一 host 连续失败到阈值就跳过它剩下的图
@@ -1433,6 +1522,7 @@ function TechNews:fetchSource(source, limit, progress, range)
                     rewrite = imgurl.rewrite,
                     budget = budget,
                     gray = gray,
+                    widths = target_widths,
                 })
                 if image then
                     if host then host_failures[host] = 0 end
@@ -1651,7 +1741,7 @@ function TechNews:doFavorite(article, issue_path)
         Trapper:info("收藏中…（点击可取消）")
         local added, err = favorites.add(article, issue_path, function(text)
             return Trapper:info(text)
-        end, self:withGrayImages())
+        end, self:withGrayImages(), self:imageWidths())
         Trapper:clear()
         if added then
             UIManager:show(InfoMessage:new{

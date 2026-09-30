@@ -8,14 +8,41 @@
 -- 3) 单张图无上限时，一张巨图就能把整期推高数 MB；整期也需要一个字节额度兜底
 --    （图片占成品期文件体积的 99%+，实测 22.5MB 期里 22.4MB 是图片）。
 -- 4) KOReader 对 GIF 只显示首帧，转静态图不丢可见内容。
+-- 5) 目标宽度由「设置 → 图片显示 → 图片分辨率」决定（默认 800，可选自动＝屏幕宽度）；
+--    见 images.widths_for。各图床的配方模板都带 %d 宽度参数，改宽度不改配方。
 
 local images = {}
 
 -- 单张上限与每期（或每篇收藏）总额度
 images.MAX_IMAGE_BYTES = 1500 * 1024
 images.MAX_TOTAL_BYTES = 12 * 1024 * 1024
--- 先按 800 宽取；CDN 报 400（超高图）或单张仍超限时降到 480
-images.WIDTHS = { 800, 480 }
+-- 目标宽度可在「设置 → 图片显示 → 图片分辨率」里配（设备不同，屏宽不同）：
+-- 默认 800；「自动」按屏幕宽度取。CDN 报 400（超高图）或单张仍超限时按比例降档。
+images.DEFAULT_WIDTH = 800
+images.PRESET_WIDTHS = { 480, 600, 800, 1000, 1200, 1600 }
+images.MIN_WIDTH = 320      -- 目标宽度下限（再窄就看不清了）
+images.MAX_WIDTH = 2400     -- 目标宽度上限（再宽对墨水屏只是白花流量）
+images.MIN_DEGRADE_WIDTH = 160  -- 降档是最后手段：允许比目标下限更窄
+images.DEGRADE_RATIO = 0.6  -- 降档宽度 = 目标宽 × 0.6（原 800 → 480）
+
+--- 由目标宽度算出「候选宽度表」：先按目标宽取，失败再降档。
+-- 为什么要有降档：CDN 对超高图（如 706x22389）会因边长超限返回 400，
+-- 换小宽度就能正常返回；单张仍超体积上限时同理。
+-- @param target 目标宽度（nil/非法 = 默认 800）
+-- @return { 目标宽, 降档宽 }（两者都落在 MIN/MAX 之内，且后者一定更小）
+function images.widths_for(target)
+    target = tonumber(target) or images.DEFAULT_WIDTH
+    target = math.floor(target + 0.5)
+    if target < images.MIN_WIDTH then target = images.MIN_WIDTH end
+    if target > images.MAX_WIDTH then target = images.MAX_WIDTH end
+    local degrade = math.floor(target * images.DEGRADE_RATIO + 0.5)
+    if degrade < images.MIN_DEGRADE_WIDTH then degrade = images.MIN_DEGRADE_WIDTH end
+    if degrade >= target then degrade = math.floor(target / 2) end
+    return { target, degrade }
+end
+
+-- 未配置时的候选宽度（与 v0.1.20 之前的行为一致：800 → 480）
+images.WIDTHS = images.widths_for(images.DEFAULT_WIDTH)
 -- 下载阶段的硬上限：超过就让 LuaSocket 中断传输（不必把整张巨图读进内存），
 -- 之后由额度逻辑判为 too_large 并降档重试或略过
 images.MAX_DOWNLOAD_BYTES = 3 * 1024 * 1024
@@ -120,7 +147,7 @@ end
 --   rewrite  = function(url, width, o) -> url|nil 可选（imgurl.rewrite）
 --   budget   = Budget                             可选
 --   gray     = boolean                            可选（让重写选灰度配方）
---   widths   = {800, 480}                         可选
+--   widths   = {目标宽, 降档宽}                    可选（images.widths_for 生成）
 -- }
 -- @return { data = , ext = } 或 nil, 原因（"not_image"|"too_large"|"over_budget"|错误串）
 function images.fetch(url, opts)
@@ -129,7 +156,7 @@ function images.fetch(url, opts)
     if type(download) ~= "function" then return nil, "缺少下载函数" end
     local budget = opts.budget
 
-    -- 候选目标：可重写时按宽度逐个尝试（800 → 480），不可重写时只下原图一次
+    -- 候选目标：可重写时按宽度逐个尝试（目标宽 → 降档宽），不可重写时只下原图一次
     local targets, seen = {}, {}
     if opts.rewrite then
         for _, width in ipairs(opts.widths or images.WIDTHS) do
