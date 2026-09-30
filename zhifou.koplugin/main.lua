@@ -84,7 +84,7 @@ local FETCH_BUDGET_SECONDS = 300
 local TechNews = WidgetContainer:extend{
     name = "zhifou",
     is_doc_only = false,
-    version = "0.1.17",
+    version = "0.1.18",
 }
 
 -- 自测只执行一次：插件用 dofile 加载，模块级变量会随 UI 重建被重置，
@@ -638,13 +638,38 @@ function TechNews:checkSourceConnectivity()
     })
 end
 
---- 网络诊断：在**子进程**里分阶段探测（DNS→TCP→TLS→HTTP→gzip），
--- 结果一次性显示在屏幕上。
--- 为什么放子进程：DNS 解析卡住时主进程会一起冻住、连取消都点不动；
--- 子进程里跑则界面可用，点取消会直接杀掉它——"卡在 DNS"本身就是结论。
+--- 生成诊断报告文本（纯探测，不碰 UI）。
+-- 注意：这段代码可能运行在**子进程**里，因此：
+--   * 绝不调用 Trapper:info —— 它会 coroutine.yield()，而子进程没有调度器来恢复协程，
+--     任务会卡在那里、父进程只能拿到空结果（KOReader 自己的子进程任务也只返回字符串）
+--   * 全程 pcall，保证任何异常都以文本形式回到父进程，而不是静默丢失
+local function build_diag_report(targets, on_progress)
+    local lines = {
+        "分阶段探测（每步的耗时与错误原文）：",
+        "若长时间停在 DNS 一步，点取消即可——那说明解析卡住，本身就是结论。",
+        "",
+    }
+    for _, target in ipairs(targets) do
+        if on_progress then on_progress(target) end
+        lines[#lines + 1] = string.format("【%s】%s", target.name, target.url)
+        local ok, result = pcall(diag.probe, target.url, { timeout = 5 })
+        if ok then
+            lines[#lines + 1] = diag.render(result)
+        else
+            lines[#lines + 1] = "探测异常：" .. tostring(result)
+        end
+        lines[#lines + 1] = ""
+    end
+    local http_mod = require("zhifou.http")
+    lines[#lines + 1] = string.format("本机 gzip 开关：%s（true = 允许声明压缩）",
+        tostring(http_mod.gzip_usable()))
+    return table.concat(lines, "\n")
+end
+
+--- 网络诊断：优先在**子进程**里跑（卡在 DNS 时界面仍可点、取消即杀掉），
+-- 若该平台子进程拿不回结果，则退回主进程直接探测（宁可短暂卡住也要有结果）。
 function TechNews:runNetworkDiagnosis()
     local sources = subscriptions.enabled(registry, self:sourceSetting())
-    -- 探测目标：优先用第一个已订阅源的 feed；没有就用一个通用 HTTPS 目标
     local targets = {}
     for _, source in ipairs(sources) do
         if source.feed and #targets < 3 then
@@ -654,40 +679,41 @@ function TechNews:runNetworkDiagnosis()
     if #targets == 0 then
         targets[1] = { name = "IT之家", url = "https://www.ithome.com/rss/" }
     end
-    -- 追一个纯 http 目标：用来区分「HTTPS/TLS 有问题」还是「整机没网」
+    -- 纯 http 对照：用来区分「HTTPS/TLS 有问题」还是「整机没网」
     targets[#targets + 1] = { name = "纯 HTTP 对照", url = "http://www.dgtle.com/rss/dgtle.xml" }
+
+    local function show(text)
+        UIManager:show(TextViewer:new{
+            title = "知否 · 网络诊断",
+            text = tostring(text),
+        })
+    end
 
     Trapper:wrap(function()
         local completed, text = Trapper:dismissableRunInSubprocess(function()
-            local lines = {
-                "分阶段探测（每步的耗时与错误原文）：",
-                "若长时间停在 DNS 一步，点取消即可——那说明解析卡住，本身就是结论。",
-                "",
-            }
-            for _, target in ipairs(targets) do
-                Trapper:info(string.format("诊断 %s…（点击可取消）", target.name))
-                lines[#lines + 1] = string.format("【%s】%s", target.name, target.url)
-                local ok, result = pcall(diag.probe, target.url, { timeout = 5 })
-                if ok then
-                    lines[#lines + 1] = diag.render(result)
-                else
-                    lines[#lines + 1] = "探测异常：" .. tostring(result)
-                end
-                lines[#lines + 1] = ""
-            end
-            local gz = require("zhifou.http")
-            lines[#lines + 1] = string.format("本机 gzip 开关：%s（true = 允许声明压缩）",
-                tostring(gz.gzip_usable()))
-            return table.concat(lines, "\n")
+            local ok, report = pcall(build_diag_report, targets)
+            if not ok then return "诊断异常（子进程）：" .. tostring(report) end
+            return report
         end, "网络诊断中…（点击可取消）", true)
         if not completed then
             UIManager:show(InfoMessage:new{ text = "诊断已取消", timeout = 2 })
             return
         end
-        UIManager:show(TextViewer:new{
-            title = "知否 · 网络诊断",
-            text = tostring(text or "（无结果）"),
-        })
+        if type(text) ~= "string" or text == "" then
+            -- 子进程没带回结果（该平台 fork/管道受限）：退回主进程直接探测，
+            -- 只测前两个目标以免长时间无响应
+            local fallback_targets = { targets[1], targets[#targets] }
+            local ok, report = pcall(build_diag_report, fallback_targets, function(target)
+                Trapper:info(string.format("诊断 %s…（点击可取消）", target.name))
+            end)
+            if ok then
+                show("（子进程未返回结果，已改为主进程直接探测）\n\n" .. report)
+            else
+                show("诊断失败：" .. tostring(report))
+            end
+            return
+        end
+        show(text)
     end)
 end
 
