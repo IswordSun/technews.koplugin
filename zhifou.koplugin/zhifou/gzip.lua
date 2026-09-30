@@ -55,21 +55,48 @@ local RAW_BITS = -15
 local libz          -- 探测结果缓存：库对象 / false（不可用）
 local libz_loaded = false
 
+-- 可注入的库加载器（单测用：模拟「库能打开但符号缺失」）
+gzip._load_lib = nil
+
+-- 必须存在的符号。**关键**：LuaJIT 的 ffi 是懒解析符号——库能 dlopen 成功、
+-- 但符号不存在时，只有在**访问该符号**时才抛 "undefined symbol: xxx"。
+-- 因此「库能加载」不等于「能用」：这里逐个摸一遍，全部拿到才算可用
+-- （Boox Nova3 上就是这种情况：libz 打开了，但 inflateInit2_ 缺失，
+--  而调用时抛出的异常穿透了整个请求 → 所有走 gzip 的源一起失败）。
+local REQUIRED_SYMBOLS = { "inflateInit2_", "inflate", "inflateEnd", "zlibVersion" }
+
+local function symbols_available(lib)
+    if not lib then return false end
+    for _, name in ipairs(REQUIRED_SYMBOLS) do
+        local ok, value = pcall(function() return lib[name] end)
+        if not ok or value == nil then
+            return false, name
+        end
+    end
+    return true
+end
+
 local function load_libz()
     if libz_loaded then return libz end
     libz_loaded = true
+    if gzip._load_lib then
+        local lib = gzip._load_lib()
+        local usable = lib and symbols_available(lib)
+        libz = usable and lib or false
+        return libz or nil
+    end
     -- KOReader 用 ffi.loadlib 找随包分发的库（处理版本号后缀）
     local ok, lib = pcall(function()
         if ffi.loadlib then return ffi.loadlib("z", 1) end
         error("no ffi.loadlib")
     end)
-    if ok and lib then
+    if ok and lib and symbols_available(lib) then
         libz = lib
         return libz
     end
     for _, name in ipairs({ "z", "libz.so.1", "libz.so", "libz.dylib", "zlib1" }) do
         local loaded, candidate = pcall(ffi.load, name)
-        if loaded and candidate then
+        if loaded and candidate and symbols_available(candidate) then
             libz = candidate
             return libz
         end
@@ -78,9 +105,21 @@ local function load_libz()
     return nil
 end
 
---- zlib 是否可用（诊断用）
+--- 清掉库探测缓存（单测用：便于模拟「库缺符号」等平台差异）
+function gzip.reset_lib_cache()
+    libz, libz_loaded = nil, false
+end
+
+--- zlib 是否可用（是否真的有可用的符号）
 function gzip.available()
     return load_libz() ~= nil
+end
+
+--- 诊断用：为什么不可用（可用时返回 true）
+function gzip.available_detail()
+    local lib = load_libz()
+    if lib then return true end
+    return false, "libz 不可用（库缺失或缺少 inflateInit2_/inflate/inflateEnd 符号）"
 end
 
 --- 按魔数判断压缩格式对应的 windowBits
@@ -154,15 +193,23 @@ function gzip.inflate(data, opts)
     if not lib then return nil, "zlib 不可用" end
     local chunk = (opts and opts.chunk) or gzip.CHUNK
     local bits = (opts and opts.window_bits) or gzip.window_bits(data)
-    local plain, err = inflate_with(lib, data, bits, chunk)
-    if plain then return plain end
-    -- 魔数判断不了「裸 deflate」：按 zlib 解失败时再按裸流试一次
-    if not (opts and opts.window_bits) and bits ~= RAW_BITS then
-        local retry, retry_err = inflate_with(lib, data, RAW_BITS, chunk)
-        if retry then return retry end
-        err = err or retry_err
+    -- 关键：整段包 pcall。符号缺失/库异常时 LuaJIT 是**抛错**而不是返回 nil，
+    -- 不兜住的话异常会一路穿透到抓取流程，表现为「所有源都抓不到」
+    local ok, plain, err = pcall(function()
+        local result, first_err = inflate_with(lib, data, bits, chunk)
+        if result then return result, nil end
+        -- 魔数判断不了「裸 deflate」：按 zlib 解失败时再按裸流试一次
+        if not (opts and opts.window_bits) and bits ~= RAW_BITS then
+            local retry, retry_err = inflate_with(lib, data, RAW_BITS, chunk)
+            if retry then return retry, nil end
+            return nil, first_err or retry_err
+        end
+        return nil, first_err
+    end)
+    if not ok then
+        return nil, "解压异常（" .. tostring(plain) .. "）"
     end
-    return nil, err
+    return plain, err
 end
 
 return gzip

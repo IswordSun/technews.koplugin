@@ -175,14 +175,22 @@ local function request_once(url, block_timeout, total_timeout, referer, opts)
         tls.options = "all"
         tls.cafile = opts.cafile
     end
-    local code, headers = socket.skip(1, transport.request{
-        url = url,
-        headers = req_headers,
-        sink = sink,
-        verify = tls.verify,
-        options = tls.options,
-        cafile = tls.cafile,
-    })
+    -- 传输层也包 pcall：某些平台的 LuaSec/LuaSocket 会**抛异常**而不是返回错误码
+    -- （例如 v0.1.15 在 Boox 上遇到的 undefined symbol）。异常必须变成一条
+    -- 普通错误，绝不能穿透到抓取流程把整期带崩。
+    local call_ok, code, headers = pcall(function()
+        return socket.skip(1, transport.request{
+            url = url,
+            headers = req_headers,
+            sink = sink,
+            verify = tls.verify,
+            options = tls.options,
+            cafile = tls.cafile,
+        })
+    end)
+    if not call_ok then
+        return nil, "请求异常（" .. tostring(code) .. "）"
+    end
     if truncated and opts.allow_truncated then
         -- 只关心「通不通」的调用方（如连通性自检）：拿到够用的数据就算成功
         return table.concat(body), nil, { headers = headers, truncated = true }
@@ -212,7 +220,10 @@ local function request_once(url, block_timeout, total_timeout, referer, opts)
         local ok_mod, gzip = pcall(require, "zhifou.gzip")
         local plain, unzip_err
         if ok_mod and type(gzip) == "table" and type(gzip.inflate) == "function" then
-            plain, unzip_err = gzip.inflate(body_text)
+            -- 再包一层 pcall：解压相关的任何异常都只能变成「失败」，不能上抛
+            local inflate_ok, result, err = pcall(gzip.inflate, body_text)
+            plain, unzip_err = inflate_ok and result or nil,
+                inflate_ok and err or ("解压异常（" .. tostring(result) .. "）")
         else
             unzip_err = "解压模块不可用"
         end

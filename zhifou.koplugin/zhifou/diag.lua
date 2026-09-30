@@ -48,7 +48,11 @@ local function default_tls(tcp, host, timeout)
     local ok_ssl, ssl = pcall(require, "ssl")
     if not ok_ssl or not ssl then return nil, "LuaSec 不可用（KOReader 缺少 ssl 模块）" end
     tcp:settimeout(timeout or 5)
-    local wrapped, err = ssl.wrap(tcp, { server = host, verify = "none" })
+    -- protocol 必须显式给：KOReader 的 ssl 包装不会补默认值，
+    -- 而 LuaSec 的 https 模块默认是 "any"（我们这里直接调 wrap，得自己补）
+    local wrapped, err = ssl.wrap(tcp, {
+        server = host, verify = "none", protocol = "any",
+    })
     if not wrapped then return nil, tostring(err or "TLS 包装失败") end
     local handshook, herr = wrapped:dohandshake()
     if not handshook then
@@ -118,6 +122,7 @@ function diag.probe(url, opts)
 
     -- 3) TLS（仅 https）
     local conn = tcp
+    local tls_failed = false
     if scheme == "https" then
         local tls_ok = stage("TLS", function()
             local wrapped, err = tls_wrap(tcp, host, timeout)
@@ -126,9 +131,9 @@ function diag.probe(url, opts)
             return true, "握手完成"
         end)
         if not tls_ok then
-            pcall(function() tcp:close() end)
-            result.summary = "TLS 握手失败（能连上，但加密层建不起来）"
-            return result
+            -- 不提前返回：继续走 HTTP 一步（走的是插件自己的请求路径），
+            -- 这样一次就能同时看到「TLS 报错」与「插件实际请求的报错」
+            tls_failed = true
         end
     end
     pcall(function() conn:close() end)
@@ -153,7 +158,10 @@ function diag.probe(url, opts)
     stage("gzip", function()
         local ok, gz = pcall(require, "zhifou.gzip")
         if not ok or type(gz) ~= "table" then return false, "解压模块加载失败" end
-        if not gz.available() then return false, "zlib 不可用（本平台无法解压）" end
+        if not gz.available() then
+            local _, why = gz.available_detail()
+            return false, tostring(why or "zlib 不可用")
+        end
         -- 用一段已知 gzip 数据自测（"test" 的 gzip 流）
         local sample = "\31\139\8\0\0\0\0\0\2\255\43\73\45\46\1\0\12\126\127\216\4\0\0\0"
         local plain, err = gz.inflate(sample)
@@ -163,7 +171,13 @@ function diag.probe(url, opts)
         return true, "解压正常"
     end)
 
-    if http_ok then
+    -- 结论优先级：TLS 阶段失败最值得说（但要区分「诊断直连 TLS 失败」与
+    -- 「插件实际请求也失败」——两者不总是一致，前者的失败可能只是探测方式不同）
+    if tls_failed then
+        result.summary = http_ok
+            and "直连 TLS 握手失败，但插件请求路径（HTTP 一步）成功——以 HTTP 一步为准"
+            or "TLS 握手失败，且插件请求路径也失败（见 HTTP 一步的报错原文）"
+    elseif http_ok then
         result.summary = "全链路可用"
     else
         result.summary = "HTTP 请求失败（DNS/TCP/TLS 都通，问题在请求或解压环节）"

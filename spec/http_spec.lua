@@ -349,6 +349,51 @@ do
 end
 
 ----------------------------------------------------------------------
+-- 1d) 解压**抛异常**（Boox 上的 undefined symbol）也必须被兜住
+----------------------------------------------------------------------
+
+do
+    reset()
+    http.reset_gzip_state()
+    local gzip = require("zhifou.gzip")
+    local saved_inflate = gzip.inflate
+    -- 模拟 LuaJIT 懒解析符号缺失：调用即抛错
+    gzip.inflate = function() error("undefined symbol: inflateInit2_", 2) end
+    local attempts = {}
+    transport.request = function(req)
+        local accept = req.headers["Accept-Encoding"]
+        attempts[#attempts + 1] = accept or "none"
+        if accept then
+            if req.sink then req.sink("\31\139\8\0gzipped-bytes") end
+            return 1, 200, { ["content-encoding"] = "gzip" }, "HTTP/1.1 200 OK"
+        end
+        if req.sink then req.sink("plain body") end
+        return 1, 200, {}, "HTTP/1.1 200 OK"
+    end
+    local body, err = http.get("https://example.com/boom")
+    eq(body, "plain body", "解压抛异常时自动改走明文并拿到内容")
+    eq(err, nil, "不报错")
+    eq(#attempts, 2, "共两次请求（先 gzip，后明文）")
+    eq(http.gzip_usable(), false, "gzip 被永久关闭")
+    gzip.inflate = saved_inflate
+    http.reset_gzip_state()
+    transport.request = fake_request
+end
+
+----------------------------------------------------------------------
+-- 1e) 传输层抛异常（平台 LuaSec/LuaSocket 报错）也要变成普通错误
+----------------------------------------------------------------------
+
+do
+    reset()
+    transport.request = function() error("bad argument #1 to 'create'", 2) end
+    local body, err = http.get("https://example.com/tls-boom", nil, nil, 0)
+    eq(body, nil, "传输层异常 → 返回 nil")
+    ok(tostring(err):find("请求异常", 1, true) ~= nil, "错误信息点明请求异常", tostring(err))
+    transport.request = fake_request
+end
+
+----------------------------------------------------------------------
 -- 5b) 重试回调：每次重试前通知调用方；返回 false 立即放弃
 ----------------------------------------------------------------------
 

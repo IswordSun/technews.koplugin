@@ -140,5 +140,45 @@ do
 end
 
 ----------------------------------------------------------------------
+-- 符号探测：库能 dlopen 成功 ≠ 能用（Boox 上 inflateInit2_ 缺失就是这么炸的）
+-- LuaJIT 的 ffi 是懒解析：访问不存在的符号会**抛错**，不是返回 nil
+----------------------------------------------------------------------
+
+do
+    -- 假库：除 inflateInit2_ 外都存在；访问它即抛「undefined symbol」
+    local fake_lib = setmetatable({
+        inflate = function() end,
+        inflateEnd = function() end,
+        zlibVersion = function() return "1.2.11" end,
+    }, {
+        __index = function(_, key)
+            error("undefined symbol: " .. tostring(key), 2)
+        end,
+    })
+    local saved_loader = gzip._load_lib
+    gzip._load_lib = function() return fake_lib end
+    gzip.reset_lib_cache()   -- 前面的用例已缓存过「可用」，这里必须重探
+    eq(gzip.available(), false, "缺少 inflateInit2_ → available() 为 false（不再谎报可用）")
+    local ok_detail, why = gzip.available_detail()
+    eq(ok_detail, false, "available_detail 报告不可用")
+    ok(tostring(why):find("符号", 1, true) ~= nil, "原因里点明符号问题", tostring(why))
+    local plain, err = gzip.inflate(gz_data)
+    eq(plain, nil, "符号缺失时 inflate 返回 nil（不抛错）")
+    ok(err ~= nil, "并给出原因", tostring(err))
+
+    -- 对照：符号齐全的假库应当可用
+    local good_lib = {
+        inflate = function() end, inflateEnd = function() end,
+        inflateInit2_ = function() end, zlibVersion = function() return "1.2.11" end,
+    }
+    gzip._load_lib = function() return good_lib end
+    gzip.reset_lib_cache()
+    eq(gzip.available(), true, "符号齐全时 available() 为 true")
+
+    gzip._load_lib = saved_loader
+    gzip.reset_lib_cache()
+end
+
+----------------------------------------------------------------------
 print(("%d checks, %d failed"):format(checks, failed))
 if failed > 0 then os.exit(1) end

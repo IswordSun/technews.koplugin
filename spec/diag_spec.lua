@@ -98,7 +98,13 @@ do
     opts.now = fake_now()
     opts.tls = function() return nil, "handshake failure" end
     local result = diag.probe("https://example.com/feed", opts)
-    eq(#result.stages, 3, "TLS 失败后停在 TLS")
+    -- TLS 失败**不再提前返回**：继续跑 HTTP 一步，一次就能同时看到
+    -- 「TLS 的报错」与「插件实际请求路径的报错」
+    eq(#result.stages, 5, "TLS 失败仍继续跑完 HTTP 与 gzip 阶段")
+    eq(stage_of(result, "TLS").ok, false, "TLS 阶段标记失败")
+    ok(tostring(stage_of(result, "TLS").detail):find("handshake", 1, true) ~= nil,
+        "保留 TLS 的原始报错", tostring(stage_of(result, "TLS").detail))
+    eq(stage_of(result, "HTTP").ok, true, "HTTP 阶段仍然执行（走插件自己的请求路径）")
     ok(tostring(result.summary):find("TLS", 1, true) ~= nil, "结论指向 TLS", tostring(result.summary))
 end
 
