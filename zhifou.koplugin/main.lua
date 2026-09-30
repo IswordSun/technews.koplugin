@@ -736,76 +736,75 @@ function TechNews:runNetworkDiagnosis()
 end
 
 --- 「设置」子菜单：管理收藏（仅有收藏时）、订阅源设置、包含图片、清理全部缓存
+--- 设置菜单：按主题分组，避免平铺一堆复选框与诊断工具
+--   图片与显示 ▶ / 订阅源 ▶ / 缓存清理 / 检查更新 / 收藏 ▶（有收藏时）/ 诊断 ▶
 function TechNews:getSettingItems()
     local items = {}
-    if #favorites.load() > 0 then
-        items[#items + 1] = {
-            text = "管理收藏",
-            sub_item_table_func = function()
-                return self:getFavoriteManageItems()
-            end,
-        }
-    end
+
+    -- 1) 显示相关（两个复选框收进一层）
     items[#items + 1] = {
-        text = "订阅源设置",
+        text = "图片与显示",
+        sub_item_table = {
+            {
+                text = "包含图片",
+                keep_menu_open = true,
+                text_func = function()
+                    return (self:withImages() and "☑ " or "☐ ") .. "包含图片"
+                end,
+                callback = function()
+                    G_reader_settings:saveSetting("zhifou_with_images",
+                        not self:withImages())
+                    -- 切换后当天缓存作废，下次打开重新生成
+                    storage:clear_date(today_str())
+                end,
+            },
+            {
+                text = "图片转灰度（省体积）",
+                keep_menu_open = true,
+                text_func = function()
+                    return (self:withGrayImages() and "☑ " or "☐ ")
+                        .. "图片转灰度（省体积）"
+                end,
+                callback = function()
+                    G_reader_settings:saveSetting("zhifou_gray_images",
+                        not self:withGrayImages())
+                    storage:clear_date(today_str())
+                end,
+            },
+        },
+    }
+
+    -- 2) 订阅源相关
+    items[#items + 1] = {
+        text = "订阅源",
         sub_item_table_func = function()
-            return self:getSourceSettingItems()
+            return {
+                {
+                    text = "订阅源设置",
+                    sub_item_table_func = function()
+                        return self:getSourceSettingItems()
+                    end,
+                },
+                {
+                    text = "源连通性自检",
+                    keep_menu_open = true,
+                    callback = function()
+                        self:checkSourceConnectivity()
+                    end,
+                },
+            }
         end,
     }
+
+    -- 3) 缓存
     items[#items + 1] = {
-        text = "源连通性自检",
-        keep_menu_open = true,
-        callback = function()
-            self:checkSourceConnectivity()
+        text = "缓存清理",
+        sub_item_table_func = function()
+            return self:getCacheCleanupItems()
         end,
     }
-    items[#items + 1] = {
-        text = "网络诊断（分阶段）",
-        keep_menu_open = true,
-        callback = function()
-            self:runNetworkDiagnosis()
-        end,
-    }
-    items[#items + 1] = {
-        text = "最近错误（诊断）",
-        keep_menu_open = true,
-        callback = function()
-            local ring = install_log_ring()
-            local text
-            if #ring.entries == 0 then
-                text = "本次启动以来没有记录到插件错误。\n\n"
-                    .. "若刚抓取失败，请先抓一次再回来看。"
-            else
-                text = table.concat(ring.entries, "\n")
-            end
-            UIManager:show(TextViewer:new{ title = "知否 · 最近错误", text = text })
-        end,
-    }
-    items[#items + 1] = {
-        text = "包含图片",
-        keep_menu_open = true,
-        text_func = function()
-            return (self:withImages() and "☑ " or "☐ ") .. "包含图片"
-        end,
-        callback = function()
-            G_reader_settings:saveSetting("zhifou_with_images",
-                not self:withImages())
-            -- 切换后当天缓存作废，下次打开重新生成
-            storage:clear_date(today_str())
-        end,
-    }
-    items[#items + 1] = {
-        text = "图片转灰度（省体积）",
-        keep_menu_open = true,
-        text_func = function()
-            return (self:withGrayImages() and "☑ " or "☐ ") .. "图片转灰度（省体积）"
-        end,
-        callback = function()
-            G_reader_settings:saveSetting("zhifou_gray_images",
-                not self:withGrayImages())
-            storage:clear_date(today_str())
-        end,
-    }
+
+    -- 4) 在线更新（有新版时文案变「更新到 vX」）
     items[#items + 1] = {
         text_func = function()
             if self._pending_release then
@@ -823,12 +822,50 @@ function TechNews:getSettingItems()
             end
         end,
     }
+
+    -- 5) 收藏（仅在有收藏时出现）
+    if #favorites.load() > 0 then
+        items[#items + 1] = {
+            text = "收藏",
+            sub_item_table_func = function()
+                return self:getFavoriteManageItems()
+            end,
+        }
+    end
+
+    -- 6) 诊断：平时不占位置，需要时才展开
     items[#items + 1] = {
-        text = "缓存清理",
+        text = "诊断",
         sub_item_table_func = function()
-            return self:getCacheCleanupItems()
+            return {
+                {
+                    text = "网络诊断（分阶段）",
+                    keep_menu_open = true,
+                    callback = function()
+                        self:runNetworkDiagnosis()
+                    end,
+                },
+                {
+                    text = "最近错误",
+                    keep_menu_open = true,
+                    callback = function()
+                        local ring = install_log_ring()
+                        local text
+                        if #ring.entries == 0 then
+                            text = "本次启动以来没有记录到插件错误。\n\n"
+                                .. "若刚抓取失败，请先抓一次再回来看。"
+                        else
+                            text = table.concat(ring.entries, "\n")
+                        end
+                        UIManager:show(TextViewer:new{
+                            title = "知否 · 最近错误", text = text,
+                        })
+                    end,
+                },
+            }
         end,
     }
+
     return items
 end
 
