@@ -44,15 +44,20 @@ local function default_connect(ip, port, timeout)
     return tcp
 end
 
+--- 直接调 ssl.wrap 时必须补齐的两个参数（实测缺一不可）：
+--   protocol → LuaSec 的 https.lua 默认 "any"
+--   mode     → https.lua 里那句 "Force client mode"（params.mode = "client"）
+-- 插件真实请求走 ssl.https.request，两者由 https.lua 自动补，所以这里缺参数
+-- 只影响诊断自身，不影响抓取。
+function diag.tls_params(host)
+    return { server = host, verify = "none", protocol = "any", mode = "client" }
+end
+
 local function default_tls(tcp, host, timeout)
     local ok_ssl, ssl = pcall(require, "ssl")
     if not ok_ssl or not ssl then return nil, "LuaSec 不可用（KOReader 缺少 ssl 模块）" end
     tcp:settimeout(timeout or 5)
-    -- protocol 必须显式给：KOReader 的 ssl 包装不会补默认值，
-    -- 而 LuaSec 的 https 模块默认是 "any"（我们这里直接调 wrap，得自己补）
-    local wrapped, err = ssl.wrap(tcp, {
-        server = host, verify = "none", protocol = "any",
-    })
+    local wrapped, err = ssl.wrap(tcp, diag.tls_params(host))
     if not wrapped then return nil, tostring(err or "TLS 包装失败") end
     local handshook, herr = wrapped:dohandshake()
     if not handshook then

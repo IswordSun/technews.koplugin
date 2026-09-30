@@ -44,6 +44,8 @@ local base = {
     http = function() return "body", nil end,
 }
 
+
+
 ----------------------------------------------------------------------
 -- 1) 全链路可用
 ----------------------------------------------------------------------
@@ -106,6 +108,18 @@ do
         "保留 TLS 的原始报错", tostring(stage_of(result, "TLS").detail))
     eq(stage_of(result, "HTTP").ok, true, "HTTP 阶段仍然执行（走插件自己的请求路径）")
     ok(tostring(result.summary):find("TLS", 1, true) ~= nil, "结论指向 TLS", tostring(result.summary))
+end
+
+----------------------------------------------------------------------
+-- 7) ssl.wrap 的参数（真机上先后漏过 protocol 与 mode，各挂一次）
+----------------------------------------------------------------------
+
+do
+    local params = diag.tls_params("example.com")
+    eq(params.server, "example.com", "带上 server（SNI）")
+    eq(params.protocol, "any", "补了 protocol=any（https.lua 的默认）")
+    eq(params.mode, "client", "补了 mode=client（https.lua 的 Force client mode）")
+    eq(params.verify, "none", "诊断不校验证书（只测能否握手）")
 end
 
 ----------------------------------------------------------------------
