@@ -823,7 +823,10 @@ local function build_diag_report(targets, on_progress)
         "",
     }
     for _, target in ipairs(targets) do
-        if on_progress then on_progress(target) end
+        -- 回调返回 false = 用户取消：立刻收手（此前返回值被丢弃，取消点了没用）
+        if on_progress and on_progress(target) == false then
+            return nil, "已取消"
+        end
         lines[#lines + 1] = string.format("【%s】%s", target.name, target.url)
         local ok, result = pcall(diag.probe, target.url, { timeout = 5 })
         if ok then
@@ -838,6 +841,9 @@ local function build_diag_report(targets, on_progress)
         tostring(http_mod.gzip_usable()))
     return table.concat(lines, "\n")
 end
+-- 注：gzip 熔断标志若在子进程里被置位，只会落在 fork 副本的内存里；父进程
+-- 之后 flush 设置时不会带上它 —— 但正常抓取路径会自己重新发现并落盘，
+-- 所以这里不做额外回传（诊断只报告，不改本机状态）。
 
 --- 网络诊断：优先在**子进程**里跑（卡在 DNS 时界面仍可点、取消即杀掉），
 -- 若该平台子进程拿不回结果，则退回主进程直接探测（宁可短暂卡住也要有结果）。
@@ -862,28 +868,52 @@ function TechNews:runNetworkDiagnosis()
         })
     end
 
+    -- 子进程第一步会写这个记号：没有它就说明「子进程根本没起来」（平台不能 fork），
+    -- 而不是「用户取消」——两者此前被混为一谈，于是那种平台上诊断永远弹「已取消」
+    local started_marker = storage.dir .. "diag-started"
+    os.remove(started_marker)
+
+    local function run_in_process(diagnosis_targets, note)
+        local fallback_targets = { diagnosis_targets[1],
+            diagnosis_targets[#diagnosis_targets] }
+        local ok, report = pcall(build_diag_report, fallback_targets, function(target)
+            local go_on = Trapper:info(string.format(
+                "诊断 %s…（点击可取消）", target.name))
+            return go_on
+        end)
+        if not ok then
+            show("诊断失败：" .. tostring(report))
+        elseif report == nil then
+            UIManager:show(InfoMessage:new{ text = "诊断已取消", timeout = 2 })
+        else
+            show((note or "") .. report)
+        end
+    end
+
     Trapper:wrap(function()
         local completed, text = Trapper:dismissableRunInSubprocess(function()
+            local handle = io.open(started_marker, "wb")
+            if handle then handle:write("1"); handle:close() end
             local ok, report = pcall(build_diag_report, targets)
             if not ok then return "诊断异常（子进程）：" .. tostring(report) end
             return report
         end, "网络诊断中…（逐个目标探测，约十几秒；点击可取消）", true)
+
+        local started = io.open(started_marker, "rb") ~= nil
+        os.remove(started_marker)
+
+        if not completed and not started then
+            -- fork 不可用：不是取消，改在主进程里跑（放弃子进程的"可杀"好处）
+            run_in_process(targets, "（子进程不可用，已改为主进程直接探测）\n\n")
+            return
+        end
         if not completed then
             UIManager:show(InfoMessage:new{ text = "诊断已取消", timeout = 2 })
             return
         end
         if type(text) ~= "string" or text == "" then
-            -- 子进程没带回结果（该平台 fork/管道受限）：退回主进程直接探测，
-            -- 只测前两个目标以免长时间无响应
-            local fallback_targets = { targets[1], targets[#targets] }
-            local ok, report = pcall(build_diag_report, fallback_targets, function(target)
-                Trapper:info(string.format("诊断 %s…（点击可取消）", target.name))
-            end)
-            if ok then
-                show("（子进程未返回结果，已改为主进程直接探测）\n\n" .. report)
-            else
-                show("诊断失败：" .. tostring(report))
-            end
+            -- 子进程起来了但没带回结果（管道/序列化问题）：同样退回主进程
+            run_in_process(targets, "（子进程未返回结果，已改为主进程直接探测）\n\n")
             return
         end
         show(text)
