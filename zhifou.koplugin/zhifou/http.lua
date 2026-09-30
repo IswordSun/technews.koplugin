@@ -74,12 +74,18 @@ local function request_once(url, block_timeout, total_timeout, referer, opts)
         ["User-Agent"] = UA,
         ["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         ["Accept-Language"] = "zh-CN,zh;q=0.9,en;q=0.8",
-        -- 声明支持压缩：feed/HTML/JSON 压完能小一个数量级。
-        -- 实测「读首诗再睡觉」feed 2.01MB → 209KB——它原本每次抓取都要下满 2MB，
-        -- 在设备端超过 30s 总超时 → 重试 4 次 ≈ 卡两分钟。图片不受影响
-        -- （本身已压缩，服务端不会再压）。
-        ["Accept-Encoding"] = "gzip, deflate",
     }
+    -- 声明支持压缩：feed/HTML/JSON 压完能小一个数量级（读首诗再睡觉 2.01MB → 204KB）。
+    -- 但**必须先确认本平台能解压**：某些构建（如部分 Android 设备）可能加载不到 libz，
+    -- 那样「所有服务端都按 gzip 回，我们却解不开」= 全部源抓取失败。
+    -- 拿不到 zlib 就不声明压缩，让服务端回明文，功能降级但不影响可用性。
+    local ok_gzip, gzip_mod = pcall(require, "zhifou.gzip")
+    if ok_gzip and gzip_mod and gzip_mod.available() then
+        req_headers["Accept-Encoding"] = "gzip, deflate"
+    else
+        logger.warn("zhifou http: gzip unavailable on this platform, "
+            .. "sending plain requests")
+    end
     -- 部分图床 CDN（如少数派 cdnfile.sspai.com）不带 Referer 会返回 403；
     -- 而微信图床 mmbiz.qpic.cn 正相反：带第三方 Referer 会被换成 140x140 占位图。
     -- 因此是否附带 Referer 由调用方通过 opts.referer 显式决定，默认不附带。

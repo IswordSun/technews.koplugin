@@ -281,6 +281,31 @@ do
 end
 
 ----------------------------------------------------------------------
+-- 1b) 平台安全性：解压不可用时不能声明 gzip
+--     （否则服务端全部回 gzip、我们解不开 → 所有源一起失败）
+----------------------------------------------------------------------
+
+do
+    reset()
+    local gzip = require("zhifou.gzip")
+    local saved_available = gzip.available
+    gzip.available = function() return false end
+    response = { body = "plain", headers = {} }
+    local body = http.get("https://example.com/no-zlib")
+    eq(body, "plain", "解压不可用时仍能正常取回明文")
+    eq(calls[1].headers["Accept-Encoding"], nil,
+        "解压不可用时**不发送** Accept-Encoding（服务端会回明文）")
+    gzip.available = saved_available
+
+    reset()
+    response = { body = "plain", headers = {} }
+    http.get("https://example.com/with-zlib")
+    eq(calls[1].headers["Accept-Encoding"], "gzip, deflate",
+        "解压可用时照常声明压缩")
+    eq(gzip.available(), true, "本机 zlib 可用（模拟器/桌面）")
+end
+
+----------------------------------------------------------------------
 -- 5b) 重试回调：每次重试前通知调用方；返回 false 立即放弃
 ----------------------------------------------------------------------
 
