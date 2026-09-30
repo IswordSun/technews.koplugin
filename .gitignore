@@ -12,3 +12,7 @@ snapshots/
 
 # temp/partial artifacts
 *.part
+
+# 移植验收的黄金样例（含第三方文章正文，本地生成不入库）：
+# ZHIFOU_PLUGIN_DIR=<插件目录> ./luajit scripts/export_fixtures.lua spec/fixtures
+spec/fixtures/

@@ -157,10 +157,35 @@ function rss.parse(xml)
     end
 
     -- <item>（RSS 2.0 / RDF 带属性）与 <entry>（Atom）
-    for block in xml:gmatch("<item[^>]*>(.-)</item>") do
+    -- 注意标签名边界：`<item[^>]*>` 会把 RDF 里频道级的 `<items>` 也匹配上，
+    -- 于是"第一条"变成从 <items> 一路吞到第一个 </item>，标题取到频道名
+    -- （实测 Slashdot：插件里凭空多出一条标题为 "Slashdot" 的幽灵条目）。
+    local function blocks_of(tag)
+        local out, pos = {}, 1
+        local open_prefix = "<" .. tag
+        local close_tag = "</" .. tag .. ">"
+        while true do
+            local s = xml:find(open_prefix, pos, true)
+            if not s then break end
+            local after = xml:sub(s + #open_prefix, s + #open_prefix)
+            if after ~= ">" and after ~= " " and after ~= "\t" and after ~= "\n" and after ~= "\r" then
+                pos = s + #open_prefix
+            else
+                local tag_end = xml:find(">", s, true)
+                if not tag_end then break end
+                local close_s, close_e = xml:find(close_tag, tag_end + 1, true)
+                if not close_s then break end
+                out[#out + 1] = xml:sub(tag_end + 1, close_s - 1)
+                pos = close_e + 1
+            end
+        end
+        return out
+    end
+
+    for _, block in ipairs(blocks_of("item")) do
         add(block, false)
     end
-    for block in xml:gmatch("<entry[^>]*>(.-)</entry>") do
+    for _, block in ipairs(blocks_of("entry")) do
         add(block, true)
     end
     return items

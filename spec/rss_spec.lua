@@ -362,5 +362,38 @@ do
 end
 
 ----------------------------------------------------------------------
+----------------------------------------------------------------------
+-- RDF：频道级 <items> 不能被当成 <item>
+-- （实测 Slashdot：插件里曾凭空多出一条标题为 "Slashdot" 的幽灵条目）
+----------------------------------------------------------------------
+do
+    local xml = [[<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns="http://purl.org/rss/1.0/"
+         xmlns:dc="http://purl.org/dc/elements/1.1/">
+<channel rdf:about="https://slashdot.org/">
+<title>Slashdot</title>
+<link>https://slashdot.org/</link>
+<items>
+<rdf:Seq><rdf:li rdf:resource="https://example.com/a"/></rdf:Seq>
+</items>
+</channel>
+<item rdf:about="https://example.com/a">
+<title>真正的第一条</title>
+<link>https://example.com/a</link>
+<dc:date>2026-09-30T09:00:00Z</dc:date>
+</item>
+<item rdf:about="https://example.com/b">
+<title>第二条</title>
+<link>https://example.com/b</link>
+<dc:date>2026-09-30T08:00:00Z</dc:date>
+</item>
+</rdf:RDF>]]
+    local items = rss.parse(xml)
+    eq(#items, 2, "RDF 只解析出真正的两条")
+    eq(items[1].title, "真正的第一条", "第一条标题取条目自己的 title，不是频道名")
+    eq(items[1].link, "https://example.com/a", "第一条链接取条目自己的 link")
+end
+
 print(("%d checks, %d failed"):format(checks, failed))
 if failed > 0 then os.exit(1) end
