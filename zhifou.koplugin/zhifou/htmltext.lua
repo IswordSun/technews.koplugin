@@ -222,6 +222,93 @@ local function table_to_lines(rows)
     return lines, max_cols
 end
 
+--- 去掉整块噪音容器（脚本/样式/导航/页眉页脚/侧栏/表单/评论区）
+-- 自定义源没有站点特调，只能靠这些通用规则先把明显的非正文摘掉。
+local NOISE_TAGS = { "script", "style", "nav", "header", "footer", "aside", "form", "noscript" }
+
+function htmltext.strip_noise(html)
+    if not html or html == "" then return "" end
+    local out = html
+    for _, tag in ipairs(NOISE_TAGS) do
+        local spans = spans_of(out, tag)
+        -- 从后往前删，避免前面的删除影响后面的偏移
+        for i = #spans, 1, -1 do
+            local span = spans[i]
+            out = out:sub(1, span.s - 1) .. out:sub(span.e + 1)
+        end
+    end
+    return out
+end
+
+--- 猜正文容器：在 <article> 与 class/id 带正文关键词的 <div>/<section> 里，
+-- 选「段落文字总量」最大的那个。找不到像样的容器时返回 nil，由调用方决定兜底。
+-- @return 区间文本，或 nil
+function htmltext.main_region(html, min_chars)
+    if not html or html == "" then return nil end
+    min_chars = min_chars or 300
+    local candidates = {}
+    local function consider(spans, tag)
+        for _, span in ipairs(spans) do
+            candidates[#candidates + 1] = { span = span, tag = tag }
+        end
+    end
+    consider(spans_of(html, "article"), "article")
+    consider(spans_of(html, "main"), "main")
+    -- div/section：只认 class/id 里带关键词的（否则整页 wrapper 总是最大）
+    for _, tag in ipairs({ "div", "section" }) do
+        for _, span in ipairs(spans_of(html, tag)) do
+            local head = html:sub(span.s, math.min(span.s + 200, span.e))
+            local open_tag = head:match("^<[^>]*>") or ""
+            local marker = open_tag:lower()
+            if marker:find("content", 1, true) or marker:find("article", 1, true)
+                or marker:find("post", 1, true) or marker:find("entry", 1, true)
+                or marker:find("main", 1, true) or marker:find("body", 1, true)
+                or marker:find("正文", 1, true) then
+                candidates[#candidates + 1] = { span = span, tag = tag }
+            end
+        end
+    end
+
+    local best, best_score = nil, 0
+    for _, candidate in ipairs(candidates) do
+        local inner = htmltext.strip_noise(candidate.span.inner)
+        local chars = 0
+        local paragraphs = 0
+        for _, p in ipairs(spans_of(inner, "p")) do
+            local text = htmltext.to_text(p.inner)
+            chars = chars + #text
+            if #text >= 20 then paragraphs = paragraphs + 1 end
+        end
+        -- 至少要有两段、总字数达标，否则不算「像正文」
+        local score = chars + paragraphs * 50
+        if paragraphs >= 2 and chars >= min_chars and score > best_score then
+            best, best_score = candidate.span.inner, score
+        end
+    end
+    return best
+end
+
+--- 通用样板文关键词：整块命中即丢弃。
+-- 只放「几乎不可能出现在正文里」的固定短语，避免误伤（例如「广告」这种词不放，
+-- 因为文章本身可能就在讲广告；这里用的是完整短语）。
+htmltext.DEFAULT_BOILERPLATE = {
+    "扫码关注", "关注公众号", "下载客户端", "客户端下载", "下载 App", "下载APP",
+    "转载请注明", "版权声明", "版权所有", "相关阅读", "责任编辑", "投稿邮箱",
+    "广告合作", "点击查看更多", "点击查看全文", "解锁全新阅读体验",
+    "更多精彩内容", "本文由", "原文链接：", "本文地址：",
+}
+
+--- 自适应内容块：先猜正文容器，猜不到就用整页（去掉噪音容器）
+-- 供没有站点特调的源（自定义源）使用；样板文关键词与调用方给的关键词合并。
+function htmltext.auto_blocks(html, drop_keywords)
+    if not html or html == "" then return {} end
+    local region = htmltext.main_region(html) or htmltext.strip_noise(html)
+    local merged = {}
+    for _, kw in ipairs(htmltext.DEFAULT_BOILERPLATE) do merged[#merged + 1] = kw end
+    for _, kw in ipairs(drop_keywords or {}) do merged[#merged + 1] = kw end
+    return htmltext.blocks(region, merged)
+end
+
 --- 提取有序内容块：{ text= } / { text=, kind= } 与 { img=url }
 -- 用于把正文按“文字-图片”顺序渲染到 EPUB。
 -- 文本块 kind：heading（h2/h3/h4 小标题）、bullet（<li> 列表项）、caption（<figcaption> 图注）；

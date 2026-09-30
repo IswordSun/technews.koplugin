@@ -437,5 +437,70 @@ do
 end
 
 ----------------------------------------------------------------------
+-- 自适应正文抽取（自定义源用；无站点特调）
+----------------------------------------------------------------------
+
+do
+    -- 噪音容器先摘掉
+    local noisy = "<nav><p>导航里的字，不该出现。</p></nav>"
+        .. "<div class=\"content\"><p>正文第一段，长度足够被收录。</p></div>"
+        .. "<footer><p>版权信息，也不该出现。</p></footer>"
+    local cleaned = htmltext.strip_noise(noisy)
+    ok(cleaned:find("导航里的字", 1, true) == nil, "strip_noise 去掉 nav")
+    ok(cleaned:find("版权信息", 1, true) == nil, "strip_noise 去掉 footer")
+    ok(cleaned:find("正文第一段", 1, true) ~= nil, "strip_noise 保留正文")
+
+    -- 猜正文容器：带 content 关键词的 div 胜出，边栏不进正文
+    local long_a = string.rep("正文甲的句子。", 12)
+    local long_b = string.rep("正文乙的句子。", 12)
+    local page = "<div class=\"sidebar\"><p>" .. string.rep("边栏推荐", 10) .. "</p>"
+        .. "<p>" .. string.rep("边栏第二段", 10) .. "</p></div>"
+        .. "<div class=\"article-content\">"
+        .. "<p>" .. long_a .. "</p>"
+        .. "<p>" .. long_b .. "</p></div>"
+    local region = htmltext.main_region(page)
+    ok(region ~= nil, "能猜到正文容器")
+    ok(region:find("正文甲", 1, true) ~= nil, "正文在区域内")
+    ok(region:find("边栏推荐", 1, true) == nil, "边栏不在区域内")
+
+    -- 太短的内容不算正文（避免把版权行当正文）
+    local tiny = "<div class=\"content\"><p>" .. string.rep("短句。", 5) .. "</p>"
+        .. "<p>" .. string.rep("也短。", 5) .. "</p></div>"
+    eq(htmltext.main_region(tiny), nil, "段落总量不足时判定「没找到正文」")
+    -- 但显式放宽门槛就认（给调用方留余地）
+    ok(htmltext.main_region(tiny, 5) ~= nil, "放宽 min_chars 后可用")
+
+    -- auto_blocks：容器猜不到（只有裸 <p>）时用整页兜底，内容不丢
+    local flat = "<p>裸页面的第一段，长度足够被收录。</p>"
+        .. "<p>裸页面的第二段，也足够长。</p>"
+    local blocks = htmltext.auto_blocks(flat, {})
+    local joined = ""
+    for _, b in ipairs(blocks) do joined = joined .. (b.text or "") end
+    ok(joined:find("裸页面的第一段", 1, true) ~= nil, "猜不到容器时整页兜底")
+    ok(joined:find("裸页面的第二段", 1, true) ~= nil, "兜底时第二段也在")
+
+    -- 样板文被丢掉，正文留下
+    local boiler = "<div class=\"content\"><p>" .. string.rep("正文句子。", 20) .. "</p>"
+        .. "<p>扫码关注我们的公众号，解锁全新阅读体验。</p>"
+        .. "<p>" .. string.rep("正文后半。", 20) .. "</p></div>"
+    local cleaned_blocks = htmltext.auto_blocks(boiler, {})
+    local body = ""
+    for _, b in ipairs(cleaned_blocks) do body = body .. (b.text or "") end
+    ok(body:find("正文句子", 1, true) ~= nil, "正文保留")
+    ok(body:find("扫码关注", 1, true) == nil, "样板文 1 被丢弃")
+    ok(body:find("解锁全新阅读体验", 1, true) == nil, "样板文 2 被丢弃")
+    -- 自定义关键词与默认表合并生效
+    local with_kw = htmltext.auto_blocks(boiler, { "正文后半" })
+    local body2 = ""
+    for _, b in ipairs(with_kw) do body2 = body2 .. (b.text or "") end
+    ok(body2:find("正文后半", 1, true) == nil, "调用方关键词同样生效")
+    ok(#htmltext.DEFAULT_BOILERPLATE > 5, "样板文表非空")
+
+    -- 空输入不炸
+    eq(#htmltext.auto_blocks(nil, {}), 0, "nil 输入返回空块")
+    eq(#htmltext.auto_blocks("", {}), 0, "空串返回空块")
+end
+
+----------------------------------------------------------------------
 print(("%d checks, %d failed"):format(checks, failed))
 if failed > 0 then os.exit(1) end

@@ -90,6 +90,7 @@ local window = require("zhifou.window")
 
 -- 全部可用订阅源（有序）；新增源只需在 sources/registry.lua 追加一行
 local registry = require("zhifou.sources.registry")
+local custom_sources = require("zhifou.custom_sources")
 
 -- 每期图片张数上限（安全阀：控制抓取时间；字节上限在 zhifou/images.lua）
 local MAX_IMAGES_PER_ISSUE = 150
@@ -100,7 +101,7 @@ local FETCH_BUDGET_SECONDS = 300
 local TechNews = WidgetContainer:extend{
     name = "zhifou",
     is_doc_only = false,
-    version = "0.2.2",
+    version = "0.2.3",
 }
 
 -- 自测只执行一次：插件用 dofile 加载，模块级变量会随 UI 重建被重置，
@@ -111,8 +112,21 @@ local function today_str()
     return os.date("%Y-%m-%d")
 end
 
-local function source_by_id(id)
-    for _, source in ipairs(registry) do
+--- 用户自定义源（存在 zhifou_custom_sources，本函数返回适配器形状）
+function TechNews:customAdapters()
+    return custom_sources.adapters(G_reader_settings:readSetting("zhifou_custom_sources"))
+end
+
+--- 内置 + 自定义（顺序：内置在前，自定义在后）
+function TechNews:allSources()
+    local all = {}
+    for _, source in ipairs(registry) do all[#all + 1] = source end
+    for _, source in ipairs(self:customAdapters()) do all[#all + 1] = source end
+    return all
+end
+
+function TechNews:source_by_id(id)
+    for _, source in ipairs(self:allSources()) do
         if source.id == id then return source end
     end
 end
@@ -175,14 +189,18 @@ local function human_size(bytes)
 end
 
 -- 缓存期条目的显示名（缓存期刊 / 缓存清理共用）：「源名 · 9月27日」（近一周加后缀）
-local function issue_label(entry)
+-- sources 由调用方传入（内置 + 自定义），这样自定义源在缓存列表里显示的是用户起的名字
+local function issue_label(entry, sources)
     local base_id = entry.id:gsub("%-week$", "")
     local label
     if base_id == "merged" then
         label = "合并期"
     else
-        local src = source_by_id(base_id)
-        label = (src and src.name) or base_id
+        local name
+        for _, src in ipairs(sources or {}) do
+            if src.id == base_id then name = src.name break end
+        end
+        label = name or base_id
     end
     if entry.id:sub(-5) == "-week" then
         label = label .. " · 近一周"
@@ -547,7 +565,7 @@ end
 -- 点开某个源后询问要读哪段时间（今日 / 昨日 / 近一周 / 自定义日期）
 function TechNews:getSourceReadItems()
     local items = {}
-    for _, source in ipairs(subscriptions.enabled(registry, self:sourceSetting())) do
+    for _, source in ipairs(subscriptions.enabled(self:allSources(), self:sourceSetting())) do
         items[#items + 1] = {
             text = source.menu_label or source.name,
             keep_menu_open = true, -- 抓取期间保持首页（同「今日一期」）
@@ -659,6 +677,7 @@ local function guard_progress_dialog(dialog, is_locked)
     dialog.onTapClose = dialog.onDismiss
 end
 
+--- 「订阅源设置」：内置源复选框 + 自定义源管理入口
 function TechNews:getSourceSettingItems()
     local items = {}
     for _, source in ipairs(registry) do
@@ -672,7 +691,7 @@ function TechNews:getSourceSettingItems()
             callback = function()
                 -- 以当前启用集合为基准翻转本项，另存为新集合
                 local ids = {}
-                for _, adapter in ipairs(subscriptions.enabled(registry, self:sourceSetting())) do
+                for _, adapter in ipairs(subscriptions.enabled(self:allSources(), self:sourceSetting())) do
                     ids[#ids + 1] = adapter.id
                 end
                 local set = subscriptions.to_set(ids)
@@ -685,14 +704,318 @@ function TechNews:getSourceSettingItems()
             end,
         }
     end
+
+    -- 自定义源：管理入口（添加 / 逐个管理）
+    local custom = self:customAdapters()
+    if #custom > 0 then
+        items[#items + 1] = { text = "─── 自定义源 ───", select_enabled = false }
+        for _, adapter in ipairs(custom) do
+            local entry
+            for _, e in ipairs(custom_sources.parse(
+                G_reader_settings:readSetting("zhifou_custom_sources"))) do
+                if e.id == adapter.id then entry = e break end
+            end
+            items[#items + 1] = {
+                text_func = function()
+                    local mark = subscriptions.is_enabled(adapter, self:sourceSetting())
+                        and "☑ " or "☐ "
+                    return mark .. adapter.name
+                end,
+                sub_item_table_func = function()
+                    return self:getCustomSourceItems(entry or {
+                        id = adapter.id, url = adapter.feed, name = adapter.name,
+                    })
+                end,
+            }
+        end
+    end
+    items[#items + 1] = {
+        text = "＋ 添加自定义源…",
+        keep_menu_open = false,
+        callback = function() self:addCustomSourceDialog() end,
+    }
     return items
+end
+
+--- 保存自定义源列表（顺手清理启用集合里已删除的 id）
+function TechNews:saveCustomSources(list)
+    G_reader_settings:saveSetting("zhifou_custom_sources", list)
+    -- 删掉的源自它的启用状态也一并移除，避免设置文件里留垃圾
+    local setting = self:sourceSetting()
+    if setting ~= nil then
+        local alive = {}
+        for _, entry in ipairs(list) do alive[entry.id] = true end
+        local changed = false
+        for id in pairs(setting) do
+            if id:sub(1, 7) == "custom-" and not alive[id] then
+                setting[id] = nil
+                changed = true
+            end
+        end
+        if changed then self:setSourceSetting(setting) end
+    end
+end
+
+--- 探测一个 feed：返回 name, item_count, kind（rss/atom/rdf），失败返回 nil, 原因
+-- 添加自定义源前先探一下——用户贴错地址时当场知道，而不是等抓取时才发现
+function TechNews:probeFeed(url)
+    local body, err = http.get(url, 15, 25, 0)
+    if not body then return nil, err or "请求失败" end
+    local items = rss.parse(body)
+    if #items == 0 then
+        return nil, "能打开，但没解析出条目（可能不是 RSS/Atom）"
+    end
+    local kind = "rss"
+    local head = body:sub(1, 2000)
+    if head:find("<feed", 1, true) then kind = "atom"
+    elseif head:find("rdf:RDF", 1, true) then kind = "rdf" end
+    local title = body:match("<title[^>]*>(.-)</title>")
+    if title then
+        title = title:gsub("<!%[CDATA%[", ""):gsub("%]%]>", "")
+            :gsub("<[^>]*>", ""):gsub("^%s+", ""):gsub("%s+$", "")
+    end
+    return {
+        name = title,
+        count = #items,
+        kind = kind,
+    }
+end
+
+--- 添加自定义源：输入地址（可一次贴多行）→ 探测 → 确认写入
+function TechNews:addCustomSourceDialog()
+    local InputDialog = require("ui/widget/inputdialog")
+    local dialog
+    dialog = InputDialog:new{
+        title = "添加自定义源",
+        description = "粘贴 RSS/Atom 地址（可一次贴多行，一行一个）",
+        input = "",
+        input_hint = "https://example.com/feed",
+        buttons = { {
+            {
+                text = "取消",
+                callback = function() UIManager:close(dialog) end,
+            },
+            {
+                text = "添加",
+                callback = function()
+                    local text = dialog:getInputText() or ""
+                    UIManager:close(dialog)
+                    self:addCustomSourcesFromText(text)
+                end,
+            },
+        } },
+    }
+    UIManager:show(dialog)
+    dialog:onShowKeyboard()
+end
+
+--- 解析多行输入 → 逐个探测 → 汇总结果（都在 Trapper 里跑，带取消）
+function TechNews:addCustomSourcesFromText(text)
+    local urls = {}
+    for line in tostring(text):gmatch("[^\n]+") do
+        local url = custom_sources.normalize_url(line)
+        if url then urls[#urls + 1] = url end
+    end
+    if #urls == 0 then
+        UIManager:show(InfoMessage:new{ text = "没识别到有效地址（需要 http/https 开头）" })
+        return
+    end
+    Trapper:wrap(function()
+        local list = custom_sources.parse(G_reader_settings:readSetting("zhifou_custom_sources"))
+        local added, skipped = {}, {}
+        for i, url in ipairs(urls) do
+            if not Trapper:info(string.format("正在检查 %d/%d…（点击可取消）", i, #urls)) then
+                break
+            end
+            local info, err = self:probeFeed(url)
+            local new_list, entry = custom_sources.add(list, {
+                url = url,
+                name = (info and info.name) or nil,
+            })
+            if new_list then
+                list = new_list
+                added[#added + 1] = string.format("%s（%s，%d 条）", entry.name,
+                    info and info.kind or "rss", info and info.count or 0)
+            else
+                skipped[#skipped + 1] = string.format("%s：%s", url, tostring(entry or err))
+            end
+        end
+        Trapper:clear()
+        if #added > 0 then
+            self:saveCustomSources(list)
+            -- 用户已经有显式订阅集合时，新源默认是「未勾选」——加上就该能看，
+            -- 所以这里显式启用它们（不想看的可以在列表里取消勾选）
+            local setting = self:sourceSetting()
+            if setting ~= nil then
+                local set = subscriptions.to_set((function()
+                    local ids = {}
+                    for _, adapter in ipairs(self:allSources()) do
+                        ids[#ids + 1] = adapter.id
+                    end
+                    return ids
+                end)())
+                for _, entry in ipairs(list) do
+                    if not setting[entry.id] then set[entry.id] = true end
+                end
+                self:setSourceSetting(set)
+            end
+        end
+        local lines = {}
+        if #added > 0 then
+            lines[#lines + 1] = "已添加 " .. #added .. " 个："
+            for _, line in ipairs(added) do lines[#lines + 1] = "· " .. line end
+        end
+        if #skipped > 0 then
+            lines[#lines + 1] = "未添加 " .. #skipped .. " 个："
+            for _, line in ipairs(skipped) do lines[#lines + 1] = "· " .. line end
+        end
+        if #lines == 0 then lines[#lines + 1] = "没有变化" end
+        UIManager:show(InfoMessage:new{
+            text = table.concat(lines, "\n"),
+            timeout = 6,
+        })
+    end)
+end
+
+--- 单个自定义源的管理菜单
+function TechNews:getCustomSourceItems(entry)
+    local function rewrite(fields)
+        local list, changed = custom_sources.update(
+            G_reader_settings:readSetting("zhifou_custom_sources"), entry.id, fields)
+        if changed then self:saveCustomSources(list) end
+    end
+    return {
+        {
+            text_func = function()
+                local enabled = subscriptions.is_enabled(
+                    custom_sources.to_adapter(entry), self:sourceSetting())
+                return (enabled and "☑ " or "☐ ") .. "在列表中启用"
+            end,
+            keep_menu_open = true,
+            callback = function()
+                local set = subscriptions.to_set((function()
+                    local ids = {}
+                    for _, adapter in ipairs(subscriptions.enabled(
+                        self:allSources(), self:sourceSetting())) do
+                        ids[#ids + 1] = adapter.id
+                    end
+                    return ids
+                end)())
+                if set[entry.id] then set[entry.id] = nil else set[entry.id] = true end
+                self:setSourceSetting(set)
+            end,
+        },
+        {
+            text = "重命名…",
+            keep_menu_open = false,
+            callback = function()
+                local InputDialog = require("ui/widget/inputdialog")
+                local dialog
+                dialog = InputDialog:new{
+                    title = "源名称",
+                    input = entry.name,
+                    buttons = { {
+                        { text = "取消", callback = function() UIManager:close(dialog) end },
+                        { text = "保存", callback = function()
+                            local name = dialog:getInputText()
+                            UIManager:close(dialog)
+                            rewrite({ name = name })
+                            UIManager:show(InfoMessage:new{ text = "已改名（重开菜单可见）", timeout = 2 })
+                        end },
+                    } },
+                }
+                UIManager:show(dialog)
+                dialog:onShowKeyboard()
+            end,
+        },
+        {
+            text_func = function()
+                return string.format("单源条数：%d", entry.max_items or custom_sources.DEFAULT_MAX_ITEMS)
+            end,
+            sub_item_table = (function()
+                local choices = {}
+                for _, n in ipairs(custom_sources.ITEM_CHOICES) do
+                    choices[#choices + 1] = {
+                        text_func = function()
+                            local current = entry.max_items or custom_sources.DEFAULT_MAX_ITEMS
+                            return (current == n and "☑ " or "☐ ") .. tostring(n) .. " 条"
+                        end,
+                        keep_menu_open = true,
+                        callback = function() rewrite({ max_items = n }) end,
+                    }
+                end
+                return choices
+            end)(),
+        },
+        {
+            text_func = function()
+                local full = (entry.mode == "fulltext")
+                return "正文获取：" .. (full and "逐篇抓全文" or "用 feed 摘要")
+            end,
+            keep_menu_open = true,
+            callback = function()
+                rewrite({ mode = entry.mode == "fulltext" and "summary" or "fulltext" })
+                UIManager:show(InfoMessage:new{
+                    text = "已切换（多数源的 feed 摘要就是全文，逐篇抓取会明显变慢）",
+                    timeout = 3,
+                })
+            end,
+        },
+        {
+            text = "测试可达性",
+            keep_menu_open = false,
+            callback = function()
+                Trapper:wrap(function()
+                    if not Trapper:info("正在测试 " .. entry.name .. "…（点击可取消）") then
+                        return
+                    end
+                    local info, err = self:probeFeed(entry.url)
+                    Trapper:clear()
+                    if info then
+                        UIManager:show(InfoMessage:new{
+                            text = string.format("可达\n%s\n类型：%s · 条目：%d 条",
+                                entry.url, info.kind, info.count),
+                            timeout = 5,
+                        })
+                    else
+                        UIManager:show(InfoMessage:new{
+                            text = "不可达\n" .. tostring(err),
+                            timeout = 5,
+                        })
+                    end
+                end)
+            end,
+        },
+        {
+            text = "删除这个源",
+            keep_menu_open = false,
+            callback = function()
+                local ConfirmBox = require("ui/widget/confirmbox")
+                UIManager:show(ConfirmBox:new{
+                    text = "删除自定义源「" .. entry.name .. "」？",
+                    ok_text = "删除",
+                    cancel_text = "取消",
+                    ok_callback = function()
+                        local list = custom_sources.remove(
+                            G_reader_settings:readSetting("zhifou_custom_sources"), entry.id)
+                        self:saveCustomSources(list)
+                        UIManager:show(InfoMessage:new{ text = "已删除", timeout = 2 })
+                    end,
+                })
+            end,
+        },
+        {
+            text = entry.url,
+            select_enabled = false,
+        },
+    }
 end
 
 --- 源连通性自检：逐个源发一个小请求（截断到 64KB，只判「通不通」），
 -- 结果一次性列出——省去「改设置 → 抓一次 → 看哪个源失败」的来回试。
 -- 注意只看 feed 可达性，不解析、不抓正文、不生成期文件。
 function TechNews:checkSourceConnectivity()
-    local sources = subscriptions.enabled(registry, self:sourceSetting())
+    local sources = subscriptions.enabled(self:allSources(), self:sourceSetting())
     if #sources == 0 then
         UIManager:show(InfoMessage:new{ text = "尚未订阅任何源（去「订阅源设置」勾选）" })
         return
@@ -865,7 +1188,7 @@ end
 --- 网络诊断：优先在**子进程**里跑（卡在 DNS 时界面仍可点、取消即杀掉），
 -- 若该平台子进程拿不回结果，则退回主进程直接探测（宁可短暂卡住也要有结果）。
 function TechNews:runNetworkDiagnosis()
-    local sources = subscriptions.enabled(registry, self:sourceSetting())
+    local sources = subscriptions.enabled(self:allSources(), self:sourceSetting())
     local targets = {}
     for _, source in ipairs(sources) do
         if source.feed and #targets < 3 then
@@ -1192,9 +1515,10 @@ end
 --- 「缓存期刊」子菜单：列出本机缓存过的各期刊物（近 7 天，随缓存清理自然过期）
 function TechNews:getHistoryItems()
     local items = {}
+    local all_sources = self:allSources()
     for _, entry in ipairs(storage:list_issues()) do
         items[#items + 1] = {
-            text = issue_label(entry),
+            text = issue_label(entry, all_sources),
             callback = function() self:openEpub(entry.path) end,
         }
         if #items >= 40 then break end
@@ -1212,9 +1536,10 @@ function TechNews:getCacheCleanupItems()
     local ConfirmBox = require("ui/widget/confirmbox")
     local entries = storage:list_issues()
     local items = {}
+    local all_sources = self:allSources()
     local total_size = 0
     for _, entry in ipairs(entries) do
-        local label = issue_label(entry)
+        local label = issue_label(entry, all_sources)
         local attr = lfs.attributes(entry.path)
         local size = (attr and attr.size) or 0
         total_size = total_size + size
@@ -1619,7 +1944,14 @@ local function fetch_rss_items(source, max_items, prefix, range)
             end
             local html = http.get(item.link)
             if html then
-                local blocks = extract.blocks(html, source.article_extract)
+                local blocks
+                if source.article_extract then
+                    blocks = extract.blocks(html, source.article_extract)
+                elseif source.custom then
+                    -- 自定义源没有站点特调：用自适应抽取（猜正文容器，猜不到就整页去噪音）
+                    blocks = htmltext.auto_blocks(html)
+                    if blocks and #blocks == 0 then blocks = nil end
+                end
                 if blocks then
                     item.blocks = blocks
                 end
@@ -2177,7 +2509,7 @@ end
 --- 抓取并打开合并期（共享管线；range 为空 = 严格今日）：
 -- 逐源抓取（跨源共享图片额度）→ 按时间倒序 → 跨源去重 → 构建打开
 function TechNews:fetchAndOpenMerged(issue_id, date, range)
-    local sources = subscriptions.enabled(registry, self:sourceSetting())
+    local sources = subscriptions.enabled(self:allSources(), self:sourceSetting())
     if #sources == 0 then
         UIManager:scheduleIn(0.1, function()
             UIManager:show(InfoMessage:new{
