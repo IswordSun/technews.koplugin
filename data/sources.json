@@ -1,0 +1,475 @@
+{
+  "count": 32,
+  "generated_by": "scripts/export_sources.lua",
+  "note": "源清单单一事实来源：改 zhifou.koplugin/zhifou/sources/*.lua 后重新导出，安卓端读同一份",
+  "schema": 1,
+  "sources": [
+    {
+      "default_enabled": true,
+      "feed": "https://www.ithome.com/rss/",
+      "id": "ithome",
+      "kind": "feed",
+      "max_items": 60,
+      "menu_label": "IT之家 · 今日新闻",
+      "merge_max_items": 30,
+      "mode": "summary",
+      "name": "IT之家"
+    },
+    {
+      "default_enabled": true,
+      "feed": "https://www.leiphone.com/feed",
+      "id": "leiphone",
+      "kind": "feed",
+      "max_items": 20,
+      "merge_max_items": 10,
+      "mode": "summary",
+      "name": "雷锋网"
+    },
+    {
+      "default_enabled": false,
+      "feed": "https://www.ifanr.com/feed",
+      "id": "ifanr",
+      "kind": "feed",
+      "max_items": 20,
+      "menu_label": "爱范儿 · 今日资讯",
+      "merge_max_items": 10,
+      "mode": "summary",
+      "name": "爱范儿"
+    },
+    {
+      "default_enabled": false,
+      "feed": "https://www.geekpark.net/rss",
+      "id": "geekpark",
+      "kind": "feed",
+      "max_items": 30,
+      "menu_label": "极客公园 · 今日资讯",
+      "merge_max_items": 12,
+      "mode": "summary",
+      "name": "极客公园"
+    },
+    {
+      "default_enabled": false,
+      "feed": "https://www.solidot.org/index.rss",
+      "id": "solidot",
+      "kind": "feed",
+      "max_items": 20,
+      "menu_label": "Solidot · 今日情报",
+      "merge_max_items": 10,
+      "mode": "summary",
+      "name": "Solidot"
+    },
+    {
+      "article_extract": {
+        "drop": [
+          "少数派为你呈现",
+          "少数派 sspai 官方店铺",
+          "少数派小红书",
+          "sspai.com/mall",
+          "shop549593764.taobao.com",
+          "xiaohongshu.com/user/profile",
+          "community/"
+        ],
+        "ends": [
+          "<div class=\"article__footer article__section__wrapper",
+          "id=\"article-comment-box\"",
+          "</article>"
+        ],
+        "max_len": 60000,
+        "starts": [
+          "<div class=\"article__main__content wangEditor-txt\"",
+          "<article class=\"morning__paper__article\""
+        ],
+        "strip": [
+          {
+            "from": "<div class=\"comment__list\"",
+            "to": [
+              "<div class=\"post__body__extend__item"
+            ]
+          }
+        ]
+      },
+      "default_enabled": false,
+      "feed": "https://sspai.com/feed",
+      "id": "sspai",
+      "kind": "feed",
+      "max_items": 10,
+      "menu_label": "少数派 · 今日文章",
+      "merge_max_items": 5,
+      "mode": "fulltext",
+      "name": "少数派"
+    },
+    {
+      "default_enabled": false,
+      "feed": "https://www.36kr.com/feed",
+      "id": "36kr",
+      "kind": "feed",
+      "max_items": 30,
+      "menu_label": "36氪 · 今日资讯",
+      "merge_max_items": 8,
+      "mode": "summary",
+      "name": "36氪"
+    },
+    {
+      "default_enabled": false,
+      "feed": "https://rss.huxiu.com/",
+      "id": "huxiu",
+      "kind": "feed",
+      "max_items": 40,
+      "menu_label": "虎嗅 · 今日资讯",
+      "merge_max_items": 8,
+      "mode": "summary",
+      "name": "虎嗅"
+    },
+    {
+      "default_enabled": false,
+      "feed": "https://www.tmtpost.com/rss.xml",
+      "id": "tmtpost",
+      "kind": "feed",
+      "max_items": 20,
+      "menu_label": "钛媒体 · 今日资讯",
+      "merge_max_items": 8,
+      "mode": "summary",
+      "name": "钛媒体"
+    },
+    {
+      "article_extract": {
+        "drop": [
+          "imagesnew/head.jpg"
+        ],
+        "ends": [
+          "<div class=\"line_font\">",
+          "<div class=\"tags\">"
+        ],
+        "max_len": 60000,
+        "starts": [
+          "<div class=\"article\">"
+        ]
+      },
+      "default_enabled": false,
+      "feed": "https://www.qbitai.com/feed",
+      "id": "qbitai",
+      "kind": "feed",
+      "max_items": 10,
+      "menu_label": "量子位 · 今日资讯",
+      "merge_max_items": 5,
+      "mode": "fulltext",
+      "name": "量子位"
+    },
+    {
+      "article_extract": {
+        "ends": [
+          "</article>"
+        ],
+        "max_len": 80000,
+        "starts": [
+          "<div class=\"ProseMirror\">"
+        ]
+      },
+      "default_enabled": false,
+      "feed": "https://www.infoq.cn/feed",
+      "id": "infoq",
+      "kind": "feed",
+      "max_items": 20,
+      "menu_label": "InfoQ 中文 · 今日资讯",
+      "merge_max_items": 6,
+      "mode": "fulltext",
+      "name": "InfoQ 中文"
+    },
+    {
+      "article_extract": {
+        "ends": [
+          "</article>",
+          "<div class=\"article-end"
+        ],
+        "max_len": 80000,
+        "starts": [
+          "<div id=\"article-root\" itemprop=\"articleBody\""
+        ]
+      },
+      "default_enabled": false,
+      "feed": "https://juejin.cn/rss",
+      "id": "juejin",
+      "kind": "feed",
+      "max_items": 20,
+      "menu_label": "掘金 · 今日文章",
+      "merge_max_items": 5,
+      "mode": "fulltext",
+      "name": "掘金"
+    },
+    {
+      "article_extract": {
+        "drop": [
+          "adsbygoogle"
+        ],
+        "ends": [
+          "id=\"blog_post_info_block\"",
+          "id=\"post_next_prev\""
+        ],
+        "max_len": 80000,
+        "starts": [
+          "<div id=\"cnblogs_post_body\""
+        ]
+      },
+      "default_enabled": false,
+      "feed": "https://feed.cnblogs.com/blog/sitehome/rss",
+      "id": "cnblogs",
+      "kind": "feed",
+      "max_items": 20,
+      "menu_label": "博客园 · 今日精选",
+      "merge_max_items": 5,
+      "mode": "fulltext",
+      "name": "博客园"
+    },
+    {
+      "default_enabled": false,
+      "feed": "http://www.dgtle.com/rss/dgtle.xml",
+      "id": "dgtle",
+      "kind": "feed",
+      "max_items": 30,
+      "menu_label": "数字尾巴 · 今日资讯",
+      "merge_max_items": 6,
+      "mode": "summary",
+      "name": "数字尾巴"
+    },
+    {
+      "article_extract": {
+        "ends": [
+          "class=\"zhuanzai\"",
+          "<div class=\"navs_newsinfo",
+          "<div class=\"news_zc\">"
+        ],
+        "max_len": 40000,
+        "starts": [
+          "<div class=\"news_info\">"
+        ]
+      },
+      "default_enabled": false,
+      "feed": "http://rss.mydrivers.com/rss.aspx?Tid=1",
+      "id": "mydrivers",
+      "kind": "feed",
+      "max_items": 30,
+      "menu_label": "快科技 · 今日资讯",
+      "merge_max_items": 6,
+      "mode": "fulltext",
+      "name": "快科技"
+    },
+    {
+      "default_enabled": false,
+      "feed": "https://www.gcores.com/rss",
+      "id": "gcores",
+      "kind": "feed",
+      "max_items": 20,
+      "menu_label": "机核 · 今日资讯",
+      "merge_max_items": 6,
+      "mode": "summary",
+      "name": "机核"
+    },
+    {
+      "default_enabled": false,
+      "feed": "https://www.yystv.cn/rss/feed",
+      "id": "yystv",
+      "kind": "feed",
+      "max_items": 12,
+      "menu_label": "游研社 · 今日资讯",
+      "merge_max_items": 5,
+      "mode": "summary",
+      "name": "游研社"
+    },
+    {
+      "default_enabled": false,
+      "feed": "https://www.ruanyifeng.com/blog/atom.xml",
+      "id": "ruanyf",
+      "kind": "feed",
+      "max_items": 5,
+      "menu_label": "阮一峰 · 科技爱好者周刊",
+      "merge_max_items": 3,
+      "mode": "summary",
+      "name": "阮一峰"
+    },
+    {
+      "default_enabled": false,
+      "feed": "https://tech.meituan.com/feed/",
+      "id": "meituan",
+      "kind": "feed",
+      "max_items": 10,
+      "menu_label": "美团技术 · 今日文章",
+      "merge_max_items": 4,
+      "mode": "summary",
+      "name": "美团技术"
+    },
+    {
+      "adapter": "zhihudaily",
+      "default_enabled": true,
+      "id": "zhihudaily",
+      "kind": "api",
+      "max_items": 20,
+      "merge_max_items": 6,
+      "mode": "api",
+      "name": "知乎日报"
+    },
+    {
+      "adapter": "one",
+      "default_enabled": true,
+      "id": "one",
+      "kind": "api",
+      "max_items": 10,
+      "merge_max_items": 3,
+      "mode": "api",
+      "name": "「一个」"
+    },
+    {
+      "adapter": "readhub",
+      "default_enabled": false,
+      "id": "readhub",
+      "kind": "api",
+      "max_items": 10,
+      "merge_max_items": 3,
+      "mode": "api",
+      "name": "Readhub 早报"
+    },
+    {
+      "adapter": "sixty",
+      "default_enabled": false,
+      "id": "sixty",
+      "kind": "api",
+      "max_items": 10,
+      "merge_max_items": 3,
+      "mode": "api",
+      "name": "60秒读懂世界"
+    },
+    {
+      "default_enabled": false,
+      "feed": "https://bedtimepoem.com/feed",
+      "id": "bedtimepoem",
+      "kind": "feed",
+      "max_items": 10,
+      "merge_max_items": 3,
+      "mode": "summary",
+      "name": "读首诗再睡觉"
+    },
+    {
+      "default_enabled": false,
+      "feed": "https://www.chuapp.com/feed",
+      "id": "chuapp",
+      "kind": "feed",
+      "max_items": 12,
+      "merge_max_items": 4,
+      "mode": "summary",
+      "name": "触乐"
+    },
+    {
+      "default_enabled": false,
+      "feed": "https://www.androidauthority.com/feed/",
+      "id": "androidauthority",
+      "kind": "feed",
+      "max_items": 30,
+      "menu_label": "Android Authority · 今日资讯",
+      "merge_max_items": 6,
+      "mode": "summary",
+      "name": "Android Authority"
+    },
+    {
+      "default_enabled": false,
+      "feed": "https://rss.slashdot.org/Slashdot/slashdotMain",
+      "id": "slashdot",
+      "kind": "feed",
+      "max_items": 30,
+      "menu_label": "Slashdot · 今日资讯",
+      "merge_max_items": 6,
+      "mode": "summary",
+      "name": "Slashdot"
+    },
+    {
+      "default_enabled": false,
+      "feed": "https://hackaday.com/blog/feed/",
+      "id": "hackaday",
+      "kind": "feed",
+      "max_items": 10,
+      "menu_label": "Hackaday · 今日资讯",
+      "merge_max_items": 4,
+      "mode": "summary",
+      "name": "Hackaday"
+    },
+    {
+      "default_enabled": false,
+      "feed": "https://www.macrumors.com/macrumors.xml",
+      "id": "macrumors",
+      "kind": "feed",
+      "max_items": 20,
+      "menu_label": "MacRumors · 今日资讯",
+      "merge_max_items": 6,
+      "mode": "summary",
+      "name": "MacRumors"
+    },
+    {
+      "article_extract": {
+        "ends": [
+          "Worth checking out on Amazon",
+          "Best iPad, Apple Watch, Apple TV accessories",
+          "My favorite Apple deals right now",
+          "<div class=\"google-preferred-source-badge\">",
+          "<div class=\"ad-disclaimer-container\">",
+          "<aside"
+        ],
+        "max_len": 60000,
+        "starts": [
+          "<div class=\"container med post-content\">"
+        ]
+      },
+      "default_enabled": false,
+      "feed": "https://9to5mac.com/feed/",
+      "id": "nine2five",
+      "kind": "feed",
+      "max_items": 20,
+      "menu_label": "9to5Mac · 今日资讯",
+      "merge_max_items": 5,
+      "mode": "fulltext",
+      "name": "9to5Mac"
+    },
+    {
+      "article_extract": {
+        "ends": [
+          "<div class=\"article-callout\">",
+          "<div class=\"cz-related-article-wrapp\">",
+          "<div class=\"cz-full-bio-content-wrapp\">",
+          "id=\"comment_form\""
+        ],
+        "max_len": 40000,
+        "starts": [
+          "<div class=\"articleBody\">"
+        ]
+      },
+      "default_enabled": false,
+      "feed": "https://www.bleepingcomputer.com/feed/",
+      "id": "bleeping",
+      "kind": "feed",
+      "max_items": 20,
+      "menu_label": "BleepingComputer · 今日资讯",
+      "merge_max_items": 5,
+      "mode": "fulltext",
+      "name": "BleepingComputer"
+    },
+    {
+      "article_extract": {
+        "ends": [
+          "<div class='sharebelow clear'>",
+          "<div class='tags'>",
+          "<div class='rightbx' id='rightbx'>"
+        ],
+        "max_len": 60000,
+        "starts": [
+          "<div class='articlebody clear cf' id='articlebody'>"
+        ]
+      },
+      "default_enabled": false,
+      "feed": "https://thehackernews.com/feeds/posts/default",
+      "id": "thn",
+      "kind": "feed",
+      "max_items": 20,
+      "menu_label": "The Hacker News · 今日资讯",
+      "merge_max_items": 5,
+      "mode": "fulltext",
+      "name": "The Hacker News"
+    }
+  ]
+}
