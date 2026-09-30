@@ -528,5 +528,61 @@ end
 cleanup()
 
 ----------------------------------------------------------------------
+-- 代码块 / 表格 / 引用块渲染 + 排版档位（2026-09-30）
+----------------------------------------------------------------------
+
+do
+    local data = {
+        title = "渲染测试", date = "2026-09-30", identifier = "zhifou-spec-render",
+        items = { {
+            title = "含代码与表格的文章", source_name = "博客园", time = "09-30 10:00",
+            blocks = {
+                { text = "正文第一段。" },
+                { text = "def hello():\n    print('hi')", kind = "code" },
+                { text = "列一  列二\n甲    乙", kind = "table" },
+                { text = "这是一段引用。", kind = "quote" },
+            },
+        } },
+    }
+    local content = build_and_read(data)
+    contains(content, '<pre class="code">def hello():', "代码块渲染成 <pre class=code>")
+    ok(pos(content, "print('hi')") ~= nil or pos(content, "print(&#39;hi&#39;)") ~= nil,
+        "代码内容保留")
+    contains(content, '<pre class="table">', "表格渲染成 <pre class=table>")
+    contains(content, '<blockquote class="quote">', "引用块渲染成 <blockquote class=quote>")
+    contains(content, "pre.code", "样式表里有代码块样式")
+    contains(content, "pre.table", "样式表里有表格样式")
+    contains(content, "blockquote.quote", "样式表里有引用块样式")
+
+    -- 默认档位 = standard：段间距 0.6em
+    contains(content, "p { margin: 0 0 0.6em;", "默认（standard）段落间距 0.6em")
+    contains(content, "body { margin: 0 2%;", "正文左右留白 2%（不再与 KOReader 页边距叠加过多）")
+    contains(content, "height: auto", "图片带 height:auto")
+end
+
+do
+    local function css_of(layout)
+        local data = {
+            title = "排版 " .. tostring(layout), date = "2026-09-30",
+            identifier = "zhifou-spec-layout-" .. tostring(layout),
+            layout = layout,
+            items = { { title = "文章", blocks = { { text = "正文。" } } } },
+        }
+        return build_and_read(data)
+    end
+    local compact = css_of("compact")
+    contains(compact, "p { margin: 0 0 0;", "compact：段间不空行")
+    contains(compact, "line-height: 1.6;", "compact：行距 1.6")
+
+    local loose = css_of("loose")
+    contains(loose, "p { margin: 0 0 1em;", "loose：段间 1em")
+    contains(loose, "line-height: 1.95;", "loose：行距 1.95")
+
+    -- 非法档位回退到 standard（不能因为设置里写了怪值就崩）
+    local bogus = css_of("nonsense")
+    contains(bogus, "p { margin: 0 0 0.6em;", "未知档位回退 standard")
+end
+
+----------------------------------------------------------------------
 print(("%d checks, %d failed"):format(checks, failed))
 if failed > 0 then os.exit(1) end

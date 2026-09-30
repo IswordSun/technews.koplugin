@@ -100,7 +100,7 @@ local FETCH_BUDGET_SECONDS = 300
 local TechNews = WidgetContainer:extend{
     name = "zhifou",
     is_doc_only = false,
-    version = "0.2.1",
+    version = "0.2.2",
 }
 
 -- 自测只执行一次：插件用 dofile 加载，模块级变量会随 UI 重建被重置，
@@ -301,6 +301,23 @@ end
 
 --- 图片是否转灰度（默认开：墨水屏上彩色没有意义，灰度 JPEG 更小；
 -- 支持的图床见 imgurl 的 gray_recipe，不支持的自动作罢）
+--- 排版档位（阅读密度）：compact / standard / loose，默认 standard
+function TechNews:layoutSetting()
+    local value = G_reader_settings:readSetting("zhifou_layout")
+    if value == "compact" or value == "loose" then return value end
+    return "standard"
+end
+
+--- 保存排版档位；改完当天缓存作废（与其它排版相关设置一致）
+function TechNews:setLayout(value)
+    if value ~= "compact" and value ~= "standard" and value ~= "loose" then
+        return
+    end
+    if self:layoutSetting() == value then return end
+    G_reader_settings:saveSetting("zhifou_layout", value)
+    self:clearTodayCache()
+end
+
 --- 图片分辨率设置：读回用户选的宽度；返回 nil 表示「自动（按屏幕宽度）」
 --- 改设置要清当天缓存时，豁免正在阅读的那一期（否则会把在读文档连进度一起删掉）
 function TechNews:clearTodayCache()
@@ -1015,7 +1032,35 @@ function TechNews:getSettingItems()
         end,
     }
 
-    -- 2) 订阅源相关
+    -- 2) 阅读排版：段落密度（首行缩进 + 段间距的组合）
+    items[#items + 1] = {
+        text = "阅读排版",
+        sub_item_table_func = function()
+            local function entry(value, label)
+                return {
+                    text_func = function()
+                        local mark = self:layoutSetting() == value and "☑ " or "☐ "
+                        return mark .. label
+                    end,
+                    keep_menu_open = true,
+                    callback = function()
+                        self:setLayout(value)
+                    end,
+                }
+            end
+            return {
+                entry("compact", "紧凑（只缩进，段间不空行）"),
+                entry("standard", "标准（缩进 + 段间空半行）"),
+                entry("loose", "宽松（段间空一行、行距更大）"),
+                {
+                    text = "改档位后当天缓存清空",
+                    select_enabled = false,
+                },
+            }
+        end,
+    }
+
+    -- 3) 订阅源相关
     items[#items + 1] = {
         text = "订阅源",
         sub_item_table_func = function()
@@ -1772,6 +1817,7 @@ function TechNews:buildAndOpen(issue_id, title, date, items, image_map, warnings
         identifier = "zhifou-" .. issue_id .. "-" .. date,
         items = items,
         images = image_map or {},
+        layout = self:layoutSetting(),
     }, path)
     if not ok then
         logger.warn("zhifou epub build failed:", tostring(err))
@@ -1939,7 +1985,7 @@ function TechNews:doFavorite(article, issue_path)
         Trapper:info("收藏中…（点击可取消）")
         local added, err = favorites.add(article, issue_path, function(text)
             return Trapper:info(text)
-        end, self:withGrayImages(), self:imageWidths())
+        end, self:withGrayImages(), self:imageWidths(), self:layoutSetting())
         Trapper:clear()
         if added then
             UIManager:show(InfoMessage:new{

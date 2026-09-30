@@ -458,7 +458,8 @@ end
 -- @param progress_cb 可选：进度回调，返回 false 表示用户取消
 -- @param with_gray 可选：图片转灰度（与设置里的开关一致；仅下载回退路径用得上）
 -- @param widths 可选：候选宽度表（images.widths_for；与设置里的图片分辨率一致）
-function favorites.add(article, issue_path, progress_cb, with_gray, widths)
+-- @param layout 可选：排版档位（compact/standard/loose，与期刊一致）
+function favorites.add(article, issue_path, progress_cb, with_gray, widths, layout)
     if not article or not article.title then
         return nil, "缺少文章信息"
     end
@@ -536,6 +537,7 @@ function favorites.add(article, issue_path, progress_cb, with_gray, widths)
         images = image_map,
         no_cover = true,    -- 收藏快照：无封面页
         no_overview = true, -- 无目录页（打开即正文）
+        layout = layout,    -- 与期刊用同一档排版
     }, path)
     if not ok then
         os.remove(path .. ".part")

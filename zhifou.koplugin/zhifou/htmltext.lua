@@ -67,6 +67,30 @@ local function find_spans(html, pattern)
     return spans
 end
 
+--- 收集指定标签的成对区间 { s, e, inner }。
+-- 为什么不用 `<p[^>]*>(.-)</p>` 这种写法：Lua 模式没有“标签名边界”，
+-- `<p[^>]*>` 会把 <pre>/<param>/<picture> 一起匹配（p + re…），而一旦误匹配，
+-- 区间会一路吞到后面某个 </p> —— 实测表现为「代码块导致其后整段正文丢失」。
+-- <li[^>]*> 误吃 <link>、<tr[^>]*> 误吃 <track>、<t[dh][^>]*> 误吃 <thead> 同理。
+local function spans_of(html, name)
+    local spans, pos = {}, 1
+    local open_pattern = "<" .. name .. "[%s>]"
+    local close_tag = "</" .. name .. ">"
+    while true do
+        local s = html:find(open_pattern, pos)
+        if not s then break end
+        local tag_end = html:find(">", s, true)
+        if not tag_end then break end
+        local close_s, close_e = html:find(close_tag, tag_end + 1, true)
+        if not close_s then break end
+        spans[#spans + 1] = {
+            s = s, e = close_e, inner = html:sub(tag_end + 1, close_s - 1),
+        }
+        pos = close_e + 1
+    end
+    return spans
+end
+
 -- 标签 [s, e] 是否完全落在 span 内部（用于判断图片属于哪个容器）
 local function contained(span, s, e)
     return s > span.s and e < span.e
@@ -86,6 +110,118 @@ local function inner_text(inner)
         (inner:gsub("<script[^>]*>.-</script>", ""):gsub("<style[^>]*>.-</style>", "")))
 end
 
+-- 单行文本的显示宽度（中日韩全角按 2 列算，用于表格列对齐）。
+-- 注意：KOReader 的 LuaJIT **没有** utf8 库（`utf8` 是 nil），只能用 util 的助手，
+-- 它们内部走 ffi/utf8proc。
+local function display_width(text)
+    if text == "" then return 0 end
+    local width = 0
+    for _, char in ipairs(util.splitToChars(text)) do
+        if util.isCJKChar(char) then
+            width = width + 2
+        else
+            width = width + 1
+        end
+    end
+    return width
+end
+
+-- 按显示宽度补空格（表格列对齐）
+local function pad_right(text, width)
+    local gap = width - display_width(text)
+    if gap <= 0 then return text end
+    return text .. string.rep(" ", gap)
+end
+
+--- 代码块内容 → 文本：保留换行与缩进，只去标签与首尾空行
+local function code_text(inner)
+    local text = inner
+        :gsub("<br%s*/?>", "\n")
+        :gsub("<[^>]*>", "")            -- <code>/<span class="hljs-..."> 等着色标签
+    text = util.htmlEntitiesToUtf8(text)
+    text = text:gsub("\r\n", "\n"):gsub("\r", "\n")
+    text = text:gsub("[ \t]+\n", "\n")          -- 行尾空白
+    text = text:gsub("^\n+", ""):gsub("\n+$", "") -- 首尾空行
+    return text
+end
+
+--- 表格 → 行/单元格（单元格文本保留人工换行）
+-- 设计取舍：博客园等站点用「单列大表格」当正文容器，此时按行输出反而更易读；
+-- 真正的多列表格才按列对齐成等宽表格。判据 = 单行最多几个非空单元格。
+local function table_rows(inner)
+    local rows = {}
+    for _, row in ipairs(spans_of(inner, "tr")) do
+        local row_html = row.inner
+        -- 单元格：<td> 与 <th> 按出现顺序合并
+        local cell_spans = {}
+        for _, kind in ipairs({ "td", "th" }) do
+            for _, cell in ipairs(spans_of(row_html, kind)) do
+                cell_spans[#cell_spans + 1] = cell
+            end
+        end
+        table.sort(cell_spans, function(a, b) return a.s < b.s end)
+        local cells = {}
+        for _, cell in ipairs(cell_spans) do
+            local cell_html = cell.inner
+            local text = cell_html
+                :gsub("<br%s*/?>", "\n")
+                :gsub("<[^>]*>", " ")
+            text = util.htmlEntitiesToUtf8(text)
+            text = text:gsub("[ \t]+", " "):gsub(" *\n *", "\n")
+            text = text:gsub("^[ \n]+", ""):gsub("[ \n]+$", "")
+            cells[#cells + 1] = text
+        end
+        local nonempty = 0
+        for _, c in ipairs(cells) do
+            if c ~= "" then nonempty = nonempty + 1 end
+        end
+        if nonempty > 0 then
+            rows[#rows + 1] = { cells = cells, nonempty = nonempty }
+        end
+    end
+    return rows
+end
+
+--- 把表格渲染成等宽文本（多列时列对齐；单列时就是普通的逐行文本）
+local function table_to_lines(rows)
+    local max_cols = 0
+    for _, row in ipairs(rows) do
+        if #row.cells > max_cols then max_cols = #row.cells end
+    end
+    local widths = {}
+    for col = 1, max_cols do
+        local w = 0
+        for _, row in ipairs(rows) do
+            local cell = row.cells[col]
+            if cell and not cell:find("\n", 1, true) then
+                local cw = display_width(cell)
+                if cw > w then w = cw end
+            end
+        end
+        widths[col] = math.min(w, 40)
+    end
+    local lines = {}
+    for _, row in ipairs(rows) do
+        if max_cols <= 1 then
+            -- 单列：当作普通段落（博客园的正文容器就是这个形态）
+            local text = row.cells[1] or ""
+            if text ~= "" then lines[#lines + 1] = text end
+        else
+            local parts = {}
+            for col = 1, #row.cells do
+                local cell = row.cells[col]
+                if cell and cell ~= "" then
+                    parts[#parts + 1] = pad_right(cell, widths[col])
+                end
+            end
+            local line = table.concat(parts, "  ")
+            line = line:gsub("[ ]+$", "")
+            if line ~= "" then lines[#lines + 1] = line end
+        end
+    end
+    return lines, max_cols
+end
+
 --- 提取有序内容块：{ text= } / { text=, kind= } 与 { img=url }
 -- 用于把正文按“文字-图片”顺序渲染到 EPUB。
 -- 文本块 kind：heading（h2/h3/h4 小标题）、bullet（<li> 列表项）、caption（<figcaption> 图注）；
@@ -101,18 +237,23 @@ function htmltext.blocks(html, drop_keywords)
     html = html:gsub("<!%[CDATA%[", ""):gsub("%]%]>", "")
     html = util.htmlEntitiesToUtf8(html)
 
-    local p_spans = find_spans(html, "<p[^>]*>(.-)</p>")
-    local f_spans = find_spans(html, "<figure[^>]*>(.-)</figure>")
-    local h2_spans = find_spans(html, "<h2[^>]*>(.-)</h2>")
-    local h3_spans = find_spans(html, "<h3[^>]*>(.-)</h3>")
-    local h4_spans = find_spans(html, "<h4[^>]*>(.-)</h4>")
-    local li_spans = find_spans(html, "<li[^>]*>(.-)</li>")
-    local cap_spans = find_spans(html, "<figcaption[^>]*>(.-)</figcaption>")
+    local p_spans = spans_of(html, "p")
+    local f_spans = spans_of(html, "figure")
+    local h2_spans = spans_of(html, "h2")
+    local h3_spans = spans_of(html, "h3")
+    local h4_spans = spans_of(html, "h4")
+    local li_spans = spans_of(html, "li")
+    local cap_spans = spans_of(html, "figcaption")
+    -- 2026-09-30 补：代码块 / 表格 / 引用块此前**整块丢失**（它们不在 <p> 里）。
+    -- 实测博客园某篇文章正文 8.4KB 全在 <table> 中 → 产出 0 字（正文基本没抓到）。
+    local pre_spans = spans_of(html, "pre")
+    local table_spans = spans_of(html, "table")
+    local quote_spans = spans_of(html, "blockquote")
     local imgs = find_spans(html, "(<img[^>]*>)")
     for _, img in ipairs(imgs) do img.tag = img.inner end
 
-    -- 没有任何可解析的 <p>…</p> 段落时，沿用旧版兜底：整体转文本 + 收集全部图片
-    if #p_spans == 0 then
+    -- 没有任何可解析的 <p>…</p> 段落、也没有代码/表格时，沿用旧版兜底：整体转文本 + 收集全部图片
+    if #p_spans == 0 and #pre_spans == 0 and #table_spans == 0 then
         local blocks = {}
         local text = htmltext.to_text(html)
         if #text >= 10 then
@@ -129,14 +270,27 @@ function htmltext.blocks(html, drop_keywords)
 
     -- 候选块：文本取容器标签起点位置，图片取自身位置，最后统一按位置排序即可还原文档顺序
     local items = {}
+    local push_seq = 0
     local function push(pos, kind, value)
-        items[#items + 1] = { pos = pos, kind = kind, value = value }
+        push_seq = push_seq + 1
+        items[#items + 1] = { pos = pos, kind = kind, value = value, seq = push_seq }
     end
 
+    -- <pre> 内部的段落/图片一律不重复产出（代码块整体由 pre 块承载）
+    local function in_pre(span)
+        for _, pre in ipairs(pre_spans) do
+            if contained(pre, span.s, span.e) then return true end
+        end
+        return false
+    end
+
+    local p_text_set = {}
     for _, span in ipairs(p_spans) do
         local inner = span.inner:gsub("<script[^>]*>.-</script>", "")
         local text = htmltext.to_text(inner)
-        if not dropped(text, drop_keywords) then
+        p_text_set[text] = true
+        -- 代码块内的 <p> 不单独产出（避免与 code 块重复）
+        if not in_pre(span) and not dropped(text, drop_keywords) then
             if #text >= 10 then
                 push(span.s, "text", text)
             end
@@ -177,6 +331,54 @@ function htmltext.blocks(html, drop_keywords)
         end
     end
 
+    -- 代码块：整体一个块，保留换行与缩进（epub 侧用等宽样式渲染）
+    for _, span in ipairs(pre_spans) do
+        local text = code_text(span.inner)
+        if #text >= 10 and not dropped(text, drop_keywords) then
+            push(span.s, "code", text)
+        end
+    end
+
+    -- 表格：多列按显示宽度对齐成等宽表格；单列（博客园式正文容器）按行输出普通段落。
+    -- 单元格文本若已被某个 <p> 收走就不再重复产出。
+    for _, span in ipairs(table_spans) do
+        local rows = table_rows(span.inner)
+        local lines, cols = table_to_lines(rows)
+        if cols > 1 then
+            -- 多列表格：整表一个块（和多行代码块同理），保住行列对齐
+            local kept = {}
+            for _, line in ipairs(lines) do
+                if #line >= 10 and not dropped(line, drop_keywords)
+                    and not p_text_set[line] then
+                    kept[#kept + 1] = line
+                end
+            end
+            if #kept > 0 then
+                push(span.s, "table", table.concat(kept, "\n"))
+            end
+        else
+            -- 单列表格：按段落逐个产出（博客园等把正文装在单列大表格里）
+            local seq = 0
+            for _, line in ipairs(lines) do
+                if #line >= 10 and not dropped(line, drop_keywords)
+                    and not p_text_set[line] then
+                    seq = seq + 1
+                    push(span.s + seq * 0.01, "text", line)
+                end
+            end
+        end
+    end
+
+    -- 引用块：内部有 <p> 时交给段落路径（那才是正文），否则整块作为引用产出
+    for _, span in ipairs(quote_spans) do
+        if not span.inner:find("<p[%s>]") then
+            local text = inner_text(span.inner)
+            if #text >= 10 and not dropped(text, drop_keywords) then
+                push(span.s, "quote", text)
+            end
+        end
+    end
+
     for _, span in ipairs(f_spans) do
         for _, img in ipairs(imgs) do
             if contained(span, img.s, img.e) then
@@ -189,6 +391,9 @@ function htmltext.blocks(html, drop_keywords)
     -- 独立图片：不属于任何 <p>/<figure>
     for _, img in ipairs(imgs) do
         local covered = false
+        for _, span in ipairs(pre_spans) do
+            if contained(span, img.s, img.e) then covered = true break end
+        end
         for _, span in ipairs(p_spans) do
             if contained(span, img.s, img.e) then covered = true break end
         end
@@ -203,7 +408,11 @@ function htmltext.blocks(html, drop_keywords)
         end
     end
 
-    table.sort(items, function(a, b) return a.pos < b.pos end)
+    table.sort(items, function(a, b)
+        if a.pos ~= b.pos then return a.pos < b.pos end
+        -- 同一位置可能有多块（表格逐行）：按插入顺序排，避免不稳定排序打乱行列
+        return (a.seq or 0) < (b.seq or 0)
+    end)
 
     -- 依次产出；嵌套容器（如 <figure> 内嵌 <p>）可能让同一张图入列两次，按位置去重
     local blocks, seen_img = {}, {}
@@ -214,9 +423,10 @@ function htmltext.blocks(html, drop_keywords)
                 seen_img[it.pos] = true
                 blocks[#blocks + 1] = { img = it.value }
             end
-        elseif it.kind == "text" then
+        elseif it.kind == "text" or it.kind == nil then
             blocks[#blocks + 1] = { text = it.value }
         else
+            -- heading / bullet / caption / code / table / quote
             blocks[#blocks + 1] = { text = it.value, kind = it.kind }
         end
     end

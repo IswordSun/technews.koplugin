@@ -104,24 +104,52 @@ local function paragraphs_html(text)
     return table.concat(output, "\n")
 end
 
-local CSS = [[
-body { margin: 0 5%; line-height: 1.75; }
+-- 排版档位：段落密度（用户可在「设置 → 阅读排版」切换）
+--   compact  紧凑：首行缩进、段间不空行（中文书常见）
+--   standard 标准：缩进 + 段间 0.6em（默认）
+--   loose    宽松：缩进 + 段间 1em、行距更大
+local LAYOUTS = {
+    compact = { para_margin = "0", line_height = "1.6", heading_top = "1em" },
+    standard = { para_margin = "0.6em", line_height = "1.75", heading_top = "1.2em" },
+    loose = { para_margin = "1em", line_height = "1.95", heading_top = "1.5em" },
+}
+-- 左右留白刻意压到 2%：KOReader 自身还有「页边距」设置，两边叠加会把正文挤窄
+local PAGE_MARGIN = "2%"
+
+--- 生成样式表（按排版档位）
+local function build_css(layout)
+    local L = LAYOUTS[layout] or LAYOUTS.standard
+    return string.format([[
+body { margin: 0 %s; line-height: %s; }
 h1 { font-size: 1.55em; line-height: 1.35; margin: 0 0 0.45em; }
 h2 { font-size: 1.25em; line-height: 1.4; margin: 0 0 0.65em; padding-bottom: 0.45em; border-bottom: 1px solid #777; }
-h3 { font-size: 1.12em; line-height: 1.4; margin: 1.2em 0 0.5em; }
-p { margin: 0 0 1em; text-indent: 2em; }
+h3 { font-size: 1.12em; line-height: 1.4; margin: %s 0 0.5em; }
+p { margin: 0 0 %s; text-indent: 2em; }
 p.meta { color: #666; font-size: 0.82em; text-indent: 0; margin: 0 0 2em; }
 p.kicker { color: #666; font-size: 0.8em; text-indent: 0; margin: 0 0 0.4em; letter-spacing: 0.06em; }
 p.link { color: #666; font-size: 0.8em; text-indent: 0; margin-top: 1.6em; word-break: break-all; }
 p.bullet { text-indent: 0; margin-left: 1.2em; }
-p.caption { color: #666; font-size: 0.85em; text-align: center; text-indent: 0; margin: 0.3em 0 1.2em; }
+p.caption { color: #666; font-size: 0.85em; text-align: center; text-indent: 0; margin: 0.2em 0 1em; }
 ol { margin: 0; padding-left: 1.5em; }
 li { margin: 0 0 0.8em; line-height: 1.45; }
-a { color: #222; text-decoration: none; }
+a { color: #1a4f8a; text-decoration: underline; }
 span.src { color: #666; font-size: 0.85em; }
-div.img { text-align: center; margin: 0.6em 0 1em; }
-div.img img { max-width: 100%; }
-]]
+div.img { text-align: center; margin: 0.6em 0 0.8em; }
+div.img img { max-width: 100%%; height: auto; }
+/* 代码块：等宽 + 浅底 + 不缩进（保留原始换行与缩进，故用 pre 语义块） */
+pre.code { font-family: monospace; font-size: 0.82em; line-height: 1.4;
+    text-indent: 0; margin: 0.6em 0 1em; padding: 0.5em 0.6em;
+    background-color: #f2f2f2; border-left: 2px solid #999; white-space: pre-wrap; }
+/* 表格：列已按显示宽度对齐，等宽字体保证不散架 */
+pre.table { font-family: monospace; font-size: 0.82em; line-height: 1.5;
+    text-indent: 0; margin: 0.6em 0 1em; white-space: pre-wrap; }
+/* 引用块：左侧竖线 + 灰字 */
+blockquote.quote { margin: 0.6em 0 1em; padding: 0 0 0 0.8em;
+    border-left: 3px solid #bbb; color: #444; text-indent: 0; }
+]], PAGE_MARGIN, L.line_height, L.heading_top, L.para_margin)
+end
+
+
 
 local EXT_MEDIA = {
     jpg = "image/jpeg", jpeg = "image/jpeg",
@@ -259,7 +287,9 @@ end
 --   date  = "2026-09-16",
 --   items = { { title=, source_name=, time=, summary=, blocks=, images=, link= }, ... },
 -- }
--- blocks = { { text= } | { text=, kind="heading"|"bullet"|"caption" } | { img=url }, ... }；
+--   layout = "compact"|"standard"|"loose"（排版档位，缺省 standard）
+-- blocks = { { text= } | { text=, kind="heading"|"bullet"|"caption"|"code"|"table"|"quote" }
+--            | { img=url }, ... }；
 -- images = { [url] = { data=, ext= } }
 function Epub.build(data, output_path)
     local date = assert(data and data.date, "missing issue date")
@@ -305,6 +335,13 @@ function Epub.build(data, output_path)
                 return '<p class="bullet">· ' .. escape(block.text) .. "</p>"
             elseif block.kind == "caption" then
                 return '<p class="caption">' .. escape(block.text) .. "</p>"
+            elseif block.kind == "code" then
+                -- 保留原始换行/缩进：用 pre（crengine 支持 basic pre）
+                return '<pre class="code">' .. escape(block.text) .. "</pre>"
+            elseif block.kind == "table" then
+                return '<pre class="table">' .. escape(block.text) .. "</pre>"
+            elseif block.kind == "quote" then
+                return '<blockquote class="quote">' .. escape(block.text) .. "</blockquote>"
             end
             return "<p>" .. escape(block.text) .. "</p>"
         elseif block.img then
@@ -412,7 +449,7 @@ function Epub.build(data, output_path)
     local manifest, spine, entries = {}, {}, {
         { name = "mimetype", data = "application/epub+zip" },
         { name = "META-INF/container.xml", data = [[<?xml version="1.0" encoding="utf-8"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>]] },
-        { name = "OEBPS/style.css", data = CSS },
+        { name = "OEBPS/style.css", data = build_css(data.layout) },
         { name = "OEBPS/nav.xhtml", data = build_nav(toc) },
         { name = "OEBPS/toc.ncx", data = build_ncx(toc, identifier, title) },
     }

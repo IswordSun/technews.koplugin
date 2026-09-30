@@ -13,7 +13,24 @@
 
 -- htmltext.lua 依赖 KOReader 的 util，这里注入恒等替身；样例均为无实体文本
 local spec_dir = (arg and arg[0] or "spec/htmltext_spec.lua"):match("^(.*)[/\\][^/\\]*$") or "."
-package.preload["util"] = function() return { htmlEntitiesToUtf8 = function(s) return s end } end
+-- 除实体解码外还要 splitToChars / isCJKChar（表格列对齐用显示宽度算）：
+-- 真实实现在 KOReader 的 util 里（内部走 ffi/utf8proc），这里给最小可用替身
+package.preload["util"] = function()
+    return {
+        htmlEntitiesToUtf8 = function(s) return s end,
+        splitToChars = function(text)
+            local chars = {}
+            for char in tostring(text):gmatch("[%z\1-\127\194-\244][\128-\191]*") do
+                chars[#chars + 1] = char
+            end
+            return chars
+        end,
+        isCJKChar = function(char)
+            local b = char:byte(1)
+            return b ~= nil and b >= 0xE0 and b <= 0xEF
+        end,
+    }
+end
 local htmltext = dofile(spec_dir .. "/../zhifou.koplugin/zhifou/htmltext.lua")
 
 ----------------------------------------------------------------------
@@ -358,6 +375,65 @@ end
 do
     eq(htmltext.to_text("<p>甲<br>乙</p>"), "甲\n乙",
         "to_text 公共 API 行为不变（块级转换行）")
+end
+
+----------------------------------------------------------------------
+-- 代码块 / 表格 / 引用块（2026-09-30 补：此前这三类整块丢失）
+----------------------------------------------------------------------
+
+do
+    -- 代码块：整块保留（含换行与缩进），不因不在 <p> 里而丢
+    local html = "<div><p>正文段落一，足够长的一段文字。</p>"
+        .. "<pre><code>def hello():\n    print('hi')</code></pre>"
+        .. "<p>代码后面的段落，也足够长了。</p></div>"
+    local blocks = htmltext.blocks(html, {})
+    local kinds = {}
+    for _, b in ipairs(blocks) do kinds[#kinds + 1] = b.kind or "text" end
+    eq(table.concat(kinds, ","), "text,code,text", "代码块夹在两个段落之间且顺序正确")
+    local code
+    for _, b in ipairs(blocks) do if b.kind == "code" then code = b.text end end
+    ok(code:find("def hello", 1, true) ~= nil, "代码内容保留", tostring(code))
+    ok(code:find("\n    print", 1, true) ~= nil, "换行与缩进保留", tostring(code))
+
+    -- 表格（多列）：按显示宽度对齐成等宽文本
+    local t = "<table><tr><th>项目</th><th>说明</th></tr>"
+        .. "<tr><td>超时</td><td>网络问题的排查要点</td></tr>"
+        .. "<tr><td>重试</td><td>服务端不稳定的处理</td></tr></table>"
+    local tb = htmltext.blocks("<p>前面有一段足够长的正文。</p>" .. t, {})
+    local table_block
+    for _, b in ipairs(tb) do if b.kind == "table" then table_block = b.text end end
+    ok(table_block ~= nil, "多列表格产出 kind=table 的块")
+    ok(table_block:find("项目", 1, true) ~= nil and table_block:find("说明", 1, true) ~= nil,
+        "表格首行两个单元格都在", tostring(table_block))
+    ok(table_block:find("超时", 1, true) ~= nil, "表格数据行在", tostring(table_block))
+    ok(#table_block:gsub("[^\n]", "") >= 2, "表格按行输出（至少 3 行）", tostring(table_block))
+
+    -- 表格（单列布局容器，博客园式）：按普通段落输出，内容不丢
+    local layout_table = "<table><tr><td>这是正文第一段，长度足够被收录。</td></tr>"
+        .. "<tr><td>这是正文第二段，同样足够长。</td></tr></table>"
+    local lb = htmltext.blocks(layout_table, {})
+    eq(#lb, 2, "单列表格按两段输出")
+    eq(lb[1].kind, nil, "单列表格输出普通段落（不带 kind）")
+    ok(lb[1].text:find("第一段", 1, true) ~= nil, "第一段内容在", tostring(lb[1].text))
+    ok(lb[2].text:find("第二段", 1, true) ~= nil, "第二段内容在", tostring(lb[2].text))
+
+    -- 表格里的 <p> 不重复产出
+    local dup = "<table><tr><td><p>这一段已经被段落规则收走了，别再来一遍。</p></td></tr></table>"
+    local db = htmltext.blocks(dup, {})
+    eq(#db, 1, "表格内的 <p> 只产出一次")
+    eq(db[1].kind, nil, "由 <p> 路径产出（普通段落）")
+
+    -- 引用块：内部无 <p> 时整块作为 quote 产出
+    local q = htmltext.blocks("<p>导语段落，长度足够。</p><blockquote>这是一段引文，长度也足够被收录。</blockquote>", {})
+    local quote
+    for _, b in ipairs(q) do if b.kind == "quote" then quote = b.text end end
+    ok(quote ~= nil, "无 <p> 的引用块产出 kind=quote")
+    ok(quote:find("引文", 1, true) ~= nil, "引文内容在", tostring(quote))
+
+    -- 引用块内有 <p>：交给段落路径，不重复
+    local q2 = htmltext.blocks("<blockquote><p>引用里的段落，长度足够被收录。</p></blockquote>", {})
+    eq(#q2, 1, "含 <p> 的引用块不额外产出 quote")
+    eq(q2[1].kind, nil, "由段落路径产出")
 end
 
 ----------------------------------------------------------------------
