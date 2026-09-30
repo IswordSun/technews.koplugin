@@ -106,10 +106,21 @@ local function request_once(url, block_timeout, total_timeout, referer, opts)
         body[#body + 1] = chunk
         return 1
     end
+    -- TLS 证书校验：默认沿用 LuaSec 的平台默认值（KOReader 多为不校验），
+    -- 下载「要执行的代码」（在线更新）时必须显式开启（见 updater.lua）
+    local tls = {}
+    if opts.verify_tls then
+        tls.verify = "peer"
+        tls.options = "all"
+        tls.cafile = opts.cafile
+    end
     local code, headers = socket.skip(1, transport.request{
         url = url,
         headers = req_headers,
         sink = sink,
+        verify = tls.verify,
+        options = tls.options,
+        cafile = tls.cafile,
     })
     if truncated and opts.allow_truncated then
         -- 只关心「通不通」的调用方（如连通性自检）：拿到够用的数据就算成功
@@ -200,7 +211,8 @@ end
 -- @param url
 -- @param dest_path 目标路径（目录须已存在）；先写 .part 再改名，失败清理
 -- @param opts { on_progress = function(received)（返回 false 中止）, max_bytes =,
---               referer =, block_timeout =, total_timeout = }
+--               referer =, block_timeout =, total_timeout =,
+--               verify_tls = 布尔（开启证书校验）, cafile = CA 包路径 }
 -- 注意：on_progress 在 LuaSocket 的 socket 回调（C 调用栈）中执行，
 -- 禁止在其中调用会 yield 的函数（如 Trapper:info），否则报
 -- "attempt to yield across C-call boundary" 并中断下载；只可做纯 Lua 处理。
@@ -250,6 +262,10 @@ function http.download(url, dest_path, opts)
             headers = headers,
             sink = sink,
             redirect = false,
+            -- 同 request_once：由调用方决定是否校验证书
+            verify = opts.verify_tls and "peer" or nil,
+            options = opts.verify_tls and "all" or nil,
+            cafile = opts.verify_tls and opts.cafile or nil,
         })
         socketutil:reset_timeout()
         pcall(function() file:close() end)

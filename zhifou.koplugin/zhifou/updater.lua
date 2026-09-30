@@ -96,12 +96,17 @@ function updater.parse_release(release)
     if not updater.parse_version(version) then
         return nil, "版本号格式不支持"
     end
-    local zip_url, zip_size
+    local zip_url, zip_size, zip_digest
     for _, asset in ipairs(release.assets or {}) do
         local name = tostring(asset.name or "")
         if name:sub(-4) == ".zip" then
             zip_url = asset.browser_download_url
             zip_size = tonumber(asset.size)
+            -- GitHub 自 2025 起在资产上提供 digest（形如 "sha256:..."）
+            local digest = tostring(asset.digest or "")
+            if digest:match("^sha256:[0-9a-fA-F]+$") then
+                zip_digest = digest:lower()
+            end
             break
         end
     end
@@ -115,6 +120,7 @@ function updater.parse_release(release)
         version = version,
         zip_url = zip_url,
         zip_size = zip_size,
+        zip_digest = zip_digest,   -- 可能为 nil（老版本 API 或未提供）
         notes = release.body,
         page_url = release.html_url,
     }
@@ -123,9 +129,16 @@ end
 --- 拉取最新 release（直连失败按镜像重试）；返回 release 表或 (nil, 错误信息)
 function updater.fetch_latest_release()
     local JSON = require("json")
+    local logger = require("logger")
     local last_err
+    local tls = updater.tls_opts()
+    if not tls.verify_tls then
+        logger.warn("zhifou updater: CA bundle not found, TLS verification off")
+    end
     for _, url in ipairs(updater.candidate_urls(updater.API_LATEST)) do
-        local body, err = http.get(url, 15, 30, 1)
+        local body, err = http.get(url, 15, 30, 1, {
+            verify_tls = tls.verify_tls, cafile = tls.cafile,
+        })
         if body then
             local ok, decoded = pcall(JSON.decode, body)
             if ok and type(decoded) == "table" then
@@ -142,26 +155,42 @@ function updater.fetch_latest_release()
     return nil, last_err or "网络不可用"
 end
 
---- 下载发行包（按候选列表依次尝试）；on_progress 返回 false 可中止
-function updater.download(zip_url, dest_path, on_progress)
+--- 下载发行包（按候选列表依次尝试）；on_progress 返回 false 可中止。
+-- @param expected_digest 可选："sha256:..." 或十六进制摘要；给出时校验内容
+-- 校验失败（镜像被投毒/内容被改）会删掉文件并尝试下一个候选源。
+function updater.download(zip_url, dest_path, on_progress, expected_digest)
     local logger = require("logger")
     local last_err
+    local tls = updater.tls_opts()
     for _, url in ipairs(updater.candidate_urls(zip_url)) do
         local ok, err = http.download(url, dest_path, {
             on_progress = on_progress,
             max_bytes = updater.MAX_PACKAGE_BYTES,
+            verify_tls = tls.verify_tls,
+            cafile = tls.cafile,
         })
         if ok then
             -- 网络中间层（镜像/拦截页）有时以 200 返回错误页，校验 ZIP 魔数兜底
             local file = io.open(dest_path, "rb")
             local magic = file and file:read(2)
             if file then file:close() end
-            if magic == "PK" then
-                return true
+            if magic ~= "PK" then
+                os.remove(dest_path)
+                last_err = "下载内容不是有效的 ZIP（可能被网络拦截）"
+                logger.warn("zhifou updater: bad zip magic from", url)
+            else
+                if not expected_digest then
+                    logger.warn("zhifou updater: no digest for this release, "
+                        .. "only zip magic checked")
+                    return true
+                end
+                local good, dig_err = updater.verify_digest(dest_path, expected_digest)
+                if good then return true end
+                os.remove(dest_path)
+                last_err = "发行包校验失败：" .. tostring(dig_err)
+                logger.warn("zhifou updater: digest check failed from",
+                    url, tostring(dig_err))
             end
-            os.remove(dest_path)
-            last_err = "下载内容不是有效的 ZIP（可能被网络拦截）"
-            logger.warn("zhifou updater: bad zip magic from", url)
         elseif err == "已取消" then
             return nil, err
         else
@@ -169,6 +198,39 @@ function updater.download(zip_url, dest_path, on_progress)
         end
     end
     return nil, last_err or "下载失败"
+end
+
+--- 计算字符串的 SHA256（小写十六进制）；实现不可用时返回 nil, 原因。
+-- 单测可注入 updater._sha256 以避免依赖 KOReader 的 ffi/sha2。
+function updater.sha256_hex(data)
+    if updater._sha256 then return updater._sha256(data) end
+    local ok, sha2 = pcall(require, "ffi/sha2")
+    if not ok or type(sha2) ~= "table" or type(sha2.sha256) ~= "function" then
+        return nil, "缺少 SHA256 实现"
+    end
+    return sha2.sha256(data)
+end
+
+--- 校验文件摘要（expected 为十六进制，可带 "sha256:" 前缀）。
+-- @return true | nil, 原因
+-- 这一步防的是「下载走了第三方镜像」：摘要是从 api.github.com 拿到的，
+-- 镜像即使被投毒，内容也对不上（TLS 之外的第二道锁）。
+function updater.verify_digest(path, expected)
+    local want = tostring(expected or ""):gsub("^sha256:", ""):lower()
+    if want == "" then return nil, "该版本未提供摘要" end
+    local file = io.open(path, "rb")
+    if not file then return nil, "文件打不开" end
+    local data = file:read("*a")
+    file:close()
+    if not data then return nil, "文件读取失败" end
+    local got, err = updater.sha256_hex(data)
+    if not got then return nil, err end
+    got = tostring(got):lower()
+    if got ~= want then
+        return nil, string.format("摘要不符（期望 %s…，实际 %s…）",
+            want:sub(1, 12), got:sub(1, 12))
+    end
+    return true
 end
 
 --- 插件目录（由本模块所在路径推导：…/plugins/zhifou.koplugin/zhifou/updater.lua）
@@ -305,6 +367,37 @@ function updater.install(zip_path, expected_version)
 end
 
 --- 清理上次更新的回滚副本（插件能加载即说明新版本可用；init 时调用）
+--- KOReader 自带的 CA 证书包路径（<koreader>/data/ca-bundle.crt）。
+-- 由插件目录推导；找不到返回 nil（此时更新流程不启用证书校验，仅记警告）。
+function updater.ca_bundle_path()
+    local dir = updater.plugin_dir()
+    -- KOReader 的 CWD 就是 <koreader>（真机 /mnt/us/koreader、模拟器构建目录），
+    -- 因此 "data/ca-bundle.crt" 最稳；插件目录上溯两条作为兜底
+    -- （注意不能只靠 "../../"：plugins 在模拟器里可能是符号链接，`..` 会跑到别处）
+    local candidates = { "data/ca-bundle.crt", "../data/ca-bundle.crt" }
+    if dir then
+        candidates[#candidates + 1] = dir .. "/../../data/ca-bundle.crt"
+        candidates[#candidates + 1] = dir .. "/../../../data/ca-bundle.crt"
+    end
+    for _, path in ipairs(candidates) do
+        local file = io.open(path, "rb")
+        if file then
+            file:close()
+            return path
+        end
+    end
+    return nil
+end
+
+--- 更新链路的 TLS 选项：有 CA 包才开启证书校验（否则宁可不校验也要能更新）
+function updater.tls_opts()
+    local ca = updater.ca_bundle_path()
+    if ca then
+        return { verify_tls = true, cafile = ca }
+    end
+    return {}
+end
+
 function updater.cleanup_backup()
     local plugin_dir = updater.plugin_dir()
     if not plugin_dir then return end

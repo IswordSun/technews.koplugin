@@ -187,5 +187,90 @@ do
 end
 
 ----------------------------------------------------------------------
+-- 发布包摘要：解析 + 校验（防「下载走了镜像」被投毒）
+----------------------------------------------------------------------
+
+do
+    local with_digest = updater.parse_release({
+        tag_name = "v9.9.9", draft = false, prerelease = false,
+        assets = { {
+            name = "zhifou.koplugin-v9.9.9.zip", size = 1000,
+            browser_download_url = "https://github.com/IswordSun/zhifou.koplugin/releases/download/v9.9.9/x.zip",
+            digest = "sha256:ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+        } },
+    })
+    ok(with_digest ~= nil, "带 digest 的 release 可解析")
+    eq(with_digest and with_digest.zip_digest,
+        "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+        "digest 被保留并转小写（带 sha256: 前缀）")
+
+    local bad_digest = updater.parse_release({
+        tag_name = "v9.9.9", draft = false, prerelease = false,
+        assets = { {
+            name = "x.zip", size = 1000,
+            browser_download_url = "https://github.com/IswordSun/zhifou.koplugin/releases/download/v9.9.9/x.zip",
+            digest = "md5:abcdef",
+        } },
+    })
+    eq(bad_digest and bad_digest.zip_digest, nil, "非 sha256 的 digest 被忽略")
+
+    local no_digest = updater.parse_release({
+        tag_name = "v9.9.9", draft = false, prerelease = false,
+        assets = { {
+            name = "x.zip", size = 1000,
+            browser_download_url = "https://github.com/IswordSun/zhifou.koplugin/releases/download/v9.9.9/x.zip",
+        } },
+    })
+    ok(no_digest ~= nil, "老 API（无 digest 字段）仍可解析")
+    eq(no_digest and no_digest.zip_digest, nil, "无 digest → nil（下载时仅校验魔数）")
+end
+
+do
+    -- 注入一个假的 sha256（避免依赖 KOReader 的 ffi/sha2）
+    updater._sha256 = function(data)
+        -- 不是真摘要，只用来验证「读取文件 → 比对 → 报错」这条链路
+        local sum = 0
+        for i = 1, #data do sum = (sum + data:byte(i)) % 65536 end
+        return string.format("%064x", sum)
+    end
+    local path = "/tmp/zhifou_digest_spec.bin"
+    local f = assert(io.open(path, "wb"))
+    f:write("hello")
+    f:close()
+
+    eq(updater.verify_digest(path, updater.sha256_hex("hello")), true,
+        "摘要一致 → 通过")
+    eq(updater.verify_digest(path, "sha256:" .. updater.sha256_hex("hello")), true,
+        "带 sha256: 前缀也通过")
+    local ok2, err2 = updater.verify_digest(path, updater.sha256_hex("other"))
+    eq(ok2, nil, "摘要不符 → 失败")
+    ok(tostring(err2):find("摘要不符", 1, true) ~= nil, "失败原因点明摘要不符", tostring(err2))
+    local ok3, err3 = updater.verify_digest(path, "")
+    eq(ok3, nil, "空摘要 → 失败（拒绝「无摘要」被当成通过）")
+    ok(tostring(err3):find("未提供摘要", 1, true) ~= nil, "空摘要的原因明确", tostring(err3))
+    local ok4 = updater.verify_digest("/tmp/zhifou_不存在.bin", "abc")
+    eq(ok4, nil, "文件不存在 → 失败")
+    os.remove(path)
+    updater._sha256 = nil
+end
+
+----------------------------------------------------------------------
+-- CA 包与 TLS 选项
+----------------------------------------------------------------------
+
+do
+    local ca = updater.ca_bundle_path()
+    ok(ca == nil or type(ca) == "string", "ca_bundle_path 返回路径或 nil")
+    local tls = updater.tls_opts()
+    ok(type(tls) == "table", "tls_opts 总返回表")
+    if ca then
+        eq(tls.verify_tls, true, "有 CA 包 → 开启证书校验")
+        eq(tls.cafile, ca, "cafile 指向 CA 包")
+    else
+        eq(tls.verify_tls, nil, "无 CA 包 → 不开启校验（fail-open，保证仍能更新）")
+    end
+end
+
+----------------------------------------------------------------------
 print(("%d checks, %d failed"):format(checks, failed))
 if failed > 0 then os.exit(1) end

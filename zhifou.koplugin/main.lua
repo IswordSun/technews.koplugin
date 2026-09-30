@@ -1786,12 +1786,13 @@ function TechNews:installUpdate(release)
         local completed, result = Trapper:dismissableRunInSubprocess(function()
             -- 子进程：下载 + 安装；进度只写文件，不触碰 UI（可安全用于 socket 回调）
             write_progress("downloading", 0, 0, zip_size)
+            -- 传入 release 提供的 sha256：镜像即使被投毒，内容对不上也会被拒
             local ok, err = updater.download(release.zip_url, zip_path, function(received)
                 write_progress("downloading",
                     zip_size > 0 and math.floor(received * 100 / zip_size) or 0,
                     received, zip_size)
                 return true
-            end)
+            end, release.zip_digest)
             if not ok then
                 return { success = false, phase = "download", error = err }
             end
