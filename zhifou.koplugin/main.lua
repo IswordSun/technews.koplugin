@@ -100,7 +100,7 @@ local FETCH_BUDGET_SECONDS = 300
 local TechNews = WidgetContainer:extend{
     name = "zhifou",
     is_doc_only = false,
-    version = "0.2.0",
+    version = "0.2.1",
 }
 
 -- 自测只执行一次：插件用 dofile 加载，模块级变量会随 UI 重建被重置，
@@ -1529,17 +1529,32 @@ end
 --- RSS 源的抓取与内容块组装；返回条目数组，或 nil 与错误原因。
 -- range 为空时按严格今日窗口；否则按给定半开区间过滤（分源阅读的昨日/近一周/指定日）。
 --- 重试时更新进度并接受取消（返回 false 会让 http.get 停止重试）
-local function retry_progress(prefix, source_name)
+--- 整段抓取任务的总耗时文案（如「总 2 分 13 秒」）。
+-- 为什么要它：合并期逐源抓取，若每源各自计时，用户看到的是"已 0 分 3 秒"
+-- 反复从零开始，完全无法判断整期还要多久。started_at 由调用方在任务开始时取一次。
+local function total_elapsed_text(started_at)
+    if not started_at then return "" end
+    local elapsed = os.time() - started_at
+    if elapsed < 0 then elapsed = 0 end
+    if elapsed < 60 then
+        return string.format("总 %d 秒", elapsed)
+    end
+    return string.format("总 %d 分 %d 秒", math.floor(elapsed / 60), elapsed % 60)
+end
+
+local function retry_progress(prefix, source_name, started_at)
     return function(attempt)
+        local total = total_elapsed_text(started_at)
+        local tail = total ~= "" and (total .. "，点击可取消）") or "点击可取消）"
         return Trapper:info(string.format(
-            "%s正在连接 %s…失败，第 %d 次重试（点击可取消）",
-            prefix, source_name, attempt))
+            "%s正在连接 %s…失败，第 %d 次重试（%s",
+            prefix, source_name, attempt, tail))
     end
 end
 
-local function fetch_rss_items(source, max_items, prefix, range)
+local function fetch_rss_items(source, max_items, prefix, range, started_at)
     local xml, err = http.get(source.feed, nil, nil, nil, {
-        on_retry = retry_progress(prefix, source.name),
+        on_retry = retry_progress(prefix, source.name, started_at),
     })
     if not xml then
         return nil, err
@@ -1608,10 +1623,14 @@ function TechNews:fetchSource(source, limit, progress, range)
         prefix = string.format("来源 %d/%d · ",
             progress.source_index, progress.source_count)
     end
+    -- 计时统一用**整个任务**的起始时间（合并期由调用方传下来）：
+    -- 每源各自计时会让用户看到"已 0 分 3 秒"反复从零开始，判断不了整期还要多久
+    local task_started_at = (progress and progress.started_at) or os.time()
     local max_items = limit or source.max_items
     -- 首个网络请求之前先出进度：feed/API 请求带重试（单源最坏 4×30s），
     -- 此前这一整段没有任何提示与取消点，用户看到的是「点了没反应」。
-    if not Trapper:info(string.format("%s正在连接 %s…（点击可取消）", prefix, source.name)) then
+    if not Trapper:info(string.format("%s正在连接 %s…（%s，点击可取消）",
+            prefix, source.name, total_elapsed_text(task_started_at))) then
         return nil, "已取消"
     end
     local result, err
@@ -1619,9 +1638,10 @@ function TechNews:fetchSource(source, limit, progress, range)
         -- 自定义抓取源（如知乎日报 API）：适配器按时间范围直接产出条目（含内容块）
         result, err = source.fetch(self, {
             range = range, limit = max_items, prefix = prefix,
+            started_at = task_started_at,
         })
     else
-        result, err = fetch_rss_items(source, max_items, prefix, range)
+        result, err = fetch_rss_items(source, max_items, prefix, range, task_started_at)
     end
     if not result then
         return nil, err
@@ -1666,7 +1686,6 @@ function TechNews:fetchSource(source, limit, progress, range)
         -- 记下基线，最后报给用户的是「本源跳过了几张」（此前逐源累加会翻倍虚报）
         local skipped_before = budget.skipped or 0
         local deadline = progress and progress.deadline
-        local started_at = os.time()
         -- 按图床记账：同一 host 连续失败到阈值就跳过它剩下的图
         -- （个别图床在设备网络上不可达时，否则会一张一张地耗光整期时间）
         local host_failures, host_circuit = {}, {}
@@ -1680,9 +1699,8 @@ function TechNews:fetchSource(source, limit, progress, range)
             end
             local url = pending[i].url
             local host = images.host_of(url)
-            local elapsed = os.time() - started_at
-            local msg = string.format("%s下载图片 %d/%d（已 %d 分 %d 秒）…（点击可取消）",
-                prefix, i, total, math.floor(elapsed / 60), elapsed % 60)
+            local msg = string.format("%s下载图片 %d/%d（%s）…（点击可取消）",
+                prefix, i, total, total_elapsed_text(task_started_at))
             if not Trapper:info(msg) then
                 return nil, "已取消"
             end
@@ -1762,7 +1780,9 @@ end
 
 --- 生成 EPUB 并打开
 -- @param warnings 可选：本期缺漏提示（合并期里有源抓取失败时的源名列表）
-function TechNews:buildAndOpen(issue_id, title, date, items, image_map, warnings)
+--- 生成 EPUB 并打开
+-- @param started_at 可选：整段任务的起始时间（用于完成提示里的总耗时）
+function TechNews:buildAndOpen(issue_id, title, date, items, image_map, warnings, started_at)
     local path = storage:epub_path(issue_id, date)
     logger.info("zhifou building issue:",
         issue_id, date, tostring(#items) .. " items", path)
@@ -1793,6 +1813,13 @@ function TechNews:buildAndOpen(issue_id, title, date, items, image_map, warnings
         image_count = image_count + 1
     end
     local text = string.format("下载完成 · %d 条资讯 · %d 张图片", #items, image_count)
+    -- 整段任务（抓取 + 图片 + 构建）的总耗时：事后能一眼看到这一期花了多久
+    if started_at then
+        local total = total_elapsed_text(started_at)
+        if total ~= "" then
+            text = text .. "（" .. total .. "）"
+        end
+    end
     -- 有源抓取失败时必须说明：否则用户会以为「今天这些源没更新」
     -- （此前只写 logger，界面上完全看不出来）
     if warnings and #warnings > 0 then
@@ -2073,7 +2100,10 @@ function TechNews:openIssueRange(source, kind, date)
         return
     end
     Trapper:wrap(function()
-        local bundle, err = self:fetchSource(source, source.max_items, nil, range)
+        -- 单源也是「整段任务」：计时从抓取开始，用于进度与完成提示
+        local task_started_at = os.time()
+        local bundle, err = self:fetchSource(source, source.max_items,
+            { started_at = task_started_at }, range)
         if not bundle then
             Trapper:clear()
             if err == "已取消" then
@@ -2090,7 +2120,8 @@ function TechNews:openIssueRange(source, kind, date)
         if bundle.budget_hit then
             warnings[#warnings + 1] = "图片阶段达到时间预算，剩余图片未下载"
         end
-        self:buildAndOpen(issue_id, title, range.date, bundle.items, bundle.images, warnings)
+        self:buildAndOpen(issue_id, title, range.date, bundle.items, bundle.images,
+            warnings, task_started_at)
         -- 结束立即收起进度消息（Trapper 不会自动关闭，需显式 clear；KOReader 惯例）
         Trapper:clear()
     end)
@@ -2154,7 +2185,9 @@ function TechNews:fetchAndOpenMerged(issue_id, date, range)
         local skip_reasons = {}
         local images_hit_deadline = false
         -- 整期时间预算：超了就停止后续源，并在完成提示里说明
-        local deadline = os.time() + FETCH_BUDGET_SECONDS
+        -- 整段任务的计时基准：逐源共用一个，用户看到的耗时不再每源归零
+        local task_started_at = os.time()
+        local deadline = task_started_at + FETCH_BUDGET_SECONDS
         local skipped_by_budget = {}
         for i, source in ipairs(sources) do
             if os.time() > deadline then
@@ -2165,7 +2198,8 @@ function TechNews:fetchAndOpenMerged(issue_id, date, range)
                 { source_index = i, source_count = #sources,
                   image_budget = image_budget,
                   image_bytes_budget = bytes_budget,
-                  deadline = deadline }, range)
+                  deadline = deadline,
+                  started_at = task_started_at }, range)
             if bundle then
                 -- 合并期图片上限跨源共享：按实际下载数扣减剩余额度
                 local used = 0
@@ -2247,7 +2281,8 @@ function TechNews:fetchAndOpenMerged(issue_id, date, range)
             warnings[#warnings + 1] = string.format("抓取超时已跳过 %d 个源（%s）",
                 #skipped_by_budget, table.concat(skipped_by_budget, "、"))
         end
-        self:buildAndOpen(issue_id, title, date, kept, all_images, warnings)
+        self:buildAndOpen(issue_id, title, date, kept, all_images, warnings,
+            task_started_at)
         Trapper:clear()
     end)
 end
