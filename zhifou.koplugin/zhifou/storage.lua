@@ -99,7 +99,12 @@ function storage:list_issues()
 end
 
 --- 删除指定日期的全部 EPUB 及其 .sdr 阅读状态（重新抓取用）
-function storage:clear_date(date)
+--- 删除某一天的全部期文件。
+-- @param protect 可选：{ [文件名] = true } 要豁免的期（正在阅读的那一期）。
+-- 与 cleanup 的 protect 同理：KOReader 先打开上次文档、后构造插件，
+-- 若在菜单里切一下图片开关就把在读的这期（连同 .sdr 进度与 sidecar）删掉，
+-- 会表现为「⋯ 快捷菜单里的收藏按钮突然消失」，要等重新抓取才回来。
+function storage:clear_date(date, protect)
     -- 目录不存在时 lfs.dir 迭代会抛错，直接返回
     if lfs.attributes(self.dir, "mode") ~= "directory" then return end
     local suffix = "-" .. date .. ".epub"
@@ -110,7 +115,9 @@ function storage:clear_date(date)
         end
     end
     for _, name in ipairs(names) do
-        self:remove_issue(name)
+        if not (protect and protect[name]) then
+            self:remove_issue(name)
+        end
     end
 end
 
@@ -186,7 +193,11 @@ function storage:cleanup_partials(min_age_seconds)
     local cutoff = os.time() - (min_age_seconds or 86400)
     local removed = 0
     for name in lfs.dir(self.dir) do
-        if name:sub(-5) == ".part" then
+        -- 更新包也算「半成品」的一种：成功时会被下次覆盖，但取消/被杀留下的
+        -- 几 MB 整包此前没有任何回收路径（cleanup 只扫 .epub）
+        local is_partial = name:sub(-5) == ".part"
+            or name == "zhifou-update.zip"
+        if is_partial then
             local path = self.dir .. name
             local attr = lfs.attributes(path)
             local mtime = attr and attr.modification

@@ -274,6 +274,7 @@ function Epub.build(data, output_path)
     local toc = {}
     local chapters = {}
     local image_entries = {}
+    local written_images = {}   -- url → 已写出的文件名（同一张图只存一份）
     local image_counter = 0
 
     -- 封面：取第一条有图的资讯的首张可用图片（收藏快照传 no_cover 跳过）
@@ -311,13 +312,19 @@ function Epub.build(data, output_path)
             local image = (data.images and data.images[block.img])
                 or (item.images and item.images[block.img])
             if image and image.data then
-                image_counter = image_counter + 1
-                local name = string.format("img-%03d.%s",
-                    image_counter, image.ext or "jpg")
-                image_entries[#image_entries + 1] = {
-                    name = "OEBPS/images/" .. name,
-                    data = image.data,
-                }
+                -- 同一张图可能被多篇/多块引用：按 URL 复用已写出的文件，
+                -- 否则下载只算一次、EPUB 里却存好几份（实测两篇引用同一图 = 两份同样字节）
+                local name = written_images[block.img]
+                if not name then
+                    image_counter = image_counter + 1
+                    name = string.format("img-%03d.%s",
+                        image_counter, image.ext or "jpg")
+                    written_images[block.img] = name
+                    image_entries[#image_entries + 1] = {
+                        name = "OEBPS/images/" .. name,
+                        data = image.data,
+                    }
+                end
                 return '<div class="img"><img src="../images/'
                     .. name .. '" alt=""/></div>'
             end

@@ -59,6 +59,12 @@ local function default_tls(tcp, host, timeout)
     tcp:settimeout(timeout or 5)
     local wrapped, err = ssl.wrap(tcp, diag.tls_params(host))
     if not wrapped then return nil, tostring(err or "TLS 包装失败") end
+    -- SNI 必须显式设置：LuaSec 不会用 params.server 自动带 SNI，
+    -- 而 KOReader 的 ssl/https 是在握手前自己调 sock:sni(host) 的。
+    -- 漏了它，需要 SNI 的站点（如 bedtimepoem.com、gh-proxy.com）会被误报成握手失败。
+    if type(wrapped.sni) == "function" then
+        pcall(function() wrapped:sni(host) end)
+    end
     local handshook, herr = wrapped:dohandshake()
     if not handshook then
         pcall(function() wrapped:close() end)

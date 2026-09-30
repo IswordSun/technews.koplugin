@@ -89,6 +89,7 @@ end
 --- 从 GitHub release 数据解析可用更新（纯函数）。
 -- 约束：非 draft/prerelease、tag 形如 v1.2.3、含 .zip 资产、体积不超上限
 function updater.parse_release(release)
+    local logger = require("logger")
     if type(release) ~= "table" or release.draft or release.prerelease then
         return nil, "发布包不可用（草稿或预发布）"
     end
@@ -104,8 +105,12 @@ function updater.parse_release(release)
             zip_size = tonumber(asset.size)
             -- GitHub 自 2025 起在资产上提供 digest（形如 "sha256:..."）
             local digest = tostring(asset.digest or "")
-            if digest:match("^sha256:[0-9a-fA-F]+$") then
+            -- 前缀大小写不敏感（GitHub 目前给小写，但别把 "SHA256:" 当成"没有摘要"
+            -- 而静默退化到只校验 ZIP 魔数——那是"该拒绝"变成"悄悄不校验"）
+            if digest:lower():match("^sha256:[0-9a-f]+$") then
                 zip_digest = digest:lower()
+            elseif digest ~= "" then
+                logger.warn("zhifou updater: unrecognized digest format:", digest)
             end
             break
         end
@@ -127,7 +132,10 @@ function updater.parse_release(release)
 end
 
 --- 拉取最新 release（直连失败按镜像重试）；返回 release 表或 (nil, 错误信息)
-function updater.fetch_latest_release()
+--- 拉取最新版信息。
+-- @param on_try 可选：每个候选 URL 之前调用（UI 层用它显示进度/提供取消点）。
+--               返回 false 表示放弃；Lua 栈上调用，可以 yield（Trapper:info）。
+function updater.fetch_latest_release(on_try)
     local JSON = require("json")
     local logger = require("logger")
     local last_err
@@ -136,8 +144,16 @@ function updater.fetch_latest_release()
         logger.warn("zhifou updater: CA bundle not found, TLS verification off")
     end
     for _, url in ipairs(updater.candidate_urls(updater.API_LATEST)) do
+        if on_try and on_try(url) == false then
+            return nil, "已取消"
+        end
         local body, err = http.get(url, 15, 30, 1, {
             verify_tls = tls.verify_tls, cafile = tls.cafile,
+            -- 重试也在 Lua 栈上回调：让 UI 能继续显示进度并响应取消
+            on_retry = function(attempt, retry_err)
+                if not on_try then return true end
+                return on_try(url, attempt, retry_err)
+            end,
         })
         if body then
             local ok, decoded = pcall(JSON.decode, body)
@@ -341,10 +357,16 @@ function updater.install(zip_path, expected_version)
         return nil, "无法备份现有插件目录"
     end
     if not os.rename(stage, plugin_dir) then
-        os.rename(backup, plugin_dir)
+        local rolled_back = os.rename(backup, plugin_dir)
         remove_tree(stage)
-        logger.warn("zhifou updater: activating new version failed, rolled back")
-        return nil, "无法写入新版本（已回滚）"
+        if rolled_back then
+            logger.warn("zhifou updater: activating new version failed, rolled back")
+            return nil, "无法写入新版本（已回滚）"
+        end
+        -- 回滚也失败：插件目录此刻可能不存在，重启后插件会"消失"，必须让用户能自救
+        logger.warn("zhifou updater: rollback FAILED, backup left at", backup)
+        return nil, "无法写入新版本，且回滚失败：请手动把 "
+            .. backup .. " 改名为 " .. plugin_dir
     end
     remove_tree(stage)
     logger.info("zhifou updater: installed v", tostring(expected_version))

@@ -373,5 +373,52 @@ do
 end
 
 ----------------------------------------------------------------------
+-- 宽度表真的进了 CDN 配方（设置 → 图片分辨率 → 实际请求 URL）
+----------------------------------------------------------------------
+
+do
+    local imgurl = dofile(spec_dir .. "/../zhifou.koplugin/zhifou/imgurl.lua")
+    local asked = {}
+    local function fetch_with(widths)
+        asked = {}
+        return images.fetch("https://s3.ifanr.com/a/b.jpg", {
+            rewrite = imgurl.rewrite,
+            widths = widths,
+            download = function(url)
+                asked[#asked + 1] = url
+                -- 第一次成功（只为看清请求了哪些 URL）
+                return "\255\216\255\224" .. string.rep("x", 64)
+            end,
+        })
+    end
+
+    fetch_with({ 1000, 600 })
+    eq(#asked, 1, "首张成功即停（不无谓地试更小宽度）")
+    ok(asked[1]:find("w/1000", 1, true) ~= nil, "请求的是设置里的 1000 档", tostring(asked[1]))
+
+    -- 空表要当成「没给」：不能退化成直接下原图（无缩放、无灰度）
+    fetch_with({})
+    ok(asked[1] ~= "https://s3.ifanr.com/a/b.jpg", "空宽度表不退化成原图")
+    ok(asked[1]:find("w/800", 1, true) ~= nil, "空表回落默认 800 档", tostring(asked[1]))
+
+    -- 高度超限的图：目标宽与按比例降档都失败时，要用绝对小档兜底
+    local tries = {}
+    local img = images.fetch("https://img.ithome.com/tall.jpg", {
+        rewrite = imgurl.rewrite,
+        widths = images.widths_for(1404),   -- 1404 / 842 / 480
+        download = function(url)
+            tries[#tries + 1] = url
+            if url:find("w_1404", 1, true) or url:find("w_842", 1, true) then
+                return nil, "HTTP 400"           -- 超高图：CDN 只认极窄宽度
+            end
+            return "\255\216\255\224" .. string.rep("y", 64)
+        end,
+    })
+    ok(img ~= nil, "兜底档把超高图救了回来")
+    eq(#tries, 3, "依次试 1404 / 842 / 480")
+    ok(tries[3]:find("w_480", 1, true) ~= nil, "最后用的是绝对小档 480", tostring(tries[3]))
+end
+
+----------------------------------------------------------------------
 print(("%d checks, %d failed"):format(checks, failed))
 if failed > 0 then os.exit(1) end

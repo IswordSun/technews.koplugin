@@ -335,14 +335,52 @@ do
     eq(attempts[2], "none", "重取时不声明压缩")
     eq(body, "plain body", "拿到了明文内容（用户不受影响）")
     eq(err, nil, "不报错")
-    eq(http.gzip_usable(), false, "gzip 被标记为不可用（后续请求都走明文）")
+    -- 坏数据**不再**永久熔断：只当次失败走明文。否则「某一段数据坏了」
+    -- 会让这台设备从此不再压缩，2MB 的 feed 永久退回 30s 超时 ×4 次
+    eq(http.is_platform_gzip_failure("解压失败(-3): incorrect data check"), false,
+        "数据损坏不算平台性失败")
+    eq(http.is_platform_gzip_failure("zlib 不可用"), true, "zlib 不可用算平台性失败")
+    eq(http.is_platform_gzip_failure("解压模块不可用"), true, "模块加载失败算平台性失败")
+    eq(http.is_platform_gzip_failure("解压异常（undefined symbol: inflateInit2_）"), true,
+        "调用抛异常算平台性失败")
 
-    -- 后续请求不应再声明压缩
+    -- 数据损坏不熔断：后续请求仍可声明压缩（平台自己会再判一次）
     reset()
     transport.request = fake_request
     response = { body = "later", headers = {} }
     eq(http.get("https://example.com/later"), "later", "后续请求正常")
-    eq(calls[1].headers["Accept-Encoding"], nil, "后续请求不再声明压缩（熔断保持）")
+    eq(calls[1].headers["Accept-Encoding"], "gzip, deflate",
+        "数据损坏不熔断，后续请求照常声明压缩")
+
+    -- 平台性失败（如符号缺失抛异常）才熔断，并落盘
+    reset()
+    http.reset_gzip()
+    local gzip = require("zhifou.gzip")
+    local saved = gzip.inflate
+    gzip.inflate = function() error("undefined symbol: inflateInit2_", 2) end
+    local platform_attempts = {}
+    transport.request = function(req)
+        local accept = req.headers["Accept-Encoding"]
+        platform_attempts[#platform_attempts + 1] = accept or "none"
+        if accept then
+            if req.sink then req.sink("\31\139\8\0gzipped") end
+            return 1, 200, { ["content-encoding"] = "gzip" }, "HTTP/1.1 200 OK"
+        end
+        if req.sink then req.sink("plain body") end
+        return 1, 200, {}, "HTTP/1.1 200 OK"
+    end
+    local boom_body, boom_err = http.get("https://example.com/boom-platform")
+    eq(boom_body, "plain body", "平台性失败时同样用明文兜住")
+    eq(boom_err, nil, "不把错误抛给上层")
+    eq(http.gzip_usable(), false, "平台性失败 → 熔断")
+    reset()
+    transport.request = fake_request
+    response = { body = "later", headers = {} }
+    eq(http.get("https://example.com/after-fuse"), "later", "熔断后请求正常")
+    eq(calls[1].headers["Accept-Encoding"], nil, "熔断后不再声明压缩")
+    gzip.inflate = saved
+    http.reset_gzip()
+    transport.request = fake_request
 
     -- 清理：让后续用例回到可用状态
     http.reset_gzip_state()

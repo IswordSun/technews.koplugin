@@ -9,7 +9,8 @@
 -- 自测钩子：环境变量 ZHIFOU_SELFTEST=1 时，启动 3 秒后自动打开「合并·今日」
 
 -- 一次性守卫：插件经 dofile 重载会重置模块级变量，必须用全局记录
--- luacheck: globals G_zhifou_sources_prompted G_zhifou_end_patch G_zhifou_toc_patch G_zhifou_log_ring
+-- luacheck: globals G_zhifou_sources_prompted G_zhifou_end_patch G_zhifou_toc_patch
+-- luacheck: globals G_zhifou_log_ring G_zhifou_log_wrappers
 
 local Device = require("device")
 local Dispatcher = require("dispatcher")
@@ -30,7 +31,18 @@ local logger = require("logger")
 local LOG_RING_SIZE = 40
 
 local function install_log_ring()
-    if G_zhifou_log_ring then return G_zhifou_log_ring end
+    -- 包装可能被 KOReader 自己换掉：Logger:setLevel 是整表替换 warn/err，
+    -- 而「工具 → 调试日志」开关会调它 → 那之后「最近错误」永远是空的。
+    -- 所以按标记自检一次，被换掉就重新装。
+    -- 注意：Lua 的函数**不能挂字段**（f.x = true 会报 "attempt to index a function value"），
+    -- 所以「这层包装还在不在」用一个全局登记表来判断
+    local wrapped_before = G_zhifou_log_wrappers
+    if G_zhifou_log_ring and wrapped_before
+        and logger.warn == wrapped_before.warn
+        and logger.err == wrapped_before.err then
+        return G_zhifou_log_ring
+    end
+    G_zhifou_log_ring = nil -- 包装已失效（如被 logger:setLevel 换掉）：重新包装
     local ring = { entries = {}, hooked = true }
     G_zhifou_log_ring = ring
     local originals = { warn = logger.warn, err = logger.err }
@@ -46,15 +58,19 @@ local function install_log_ring()
             while #ring.entries > LOG_RING_SIZE do table.remove(ring.entries, 1) end
         end
     end
+    local installed = {}
     for name, prefix in pairs({ warn = "WARN", err = "ERR" }) do
         local original = originals[name]
         if type(original) == "function" then
-            logger[name] = function(...)
+            local wrapper = function(...)
                 pcall(record, prefix, ...)   -- 记录失败绝不能影响日志本身
                 return original(...)
             end
+            installed[name] = wrapper
+            logger[name] = wrapper
         end
     end
+    G_zhifou_log_wrappers = installed
     return ring
 end
 
@@ -84,7 +100,7 @@ local FETCH_BUDGET_SECONDS = 300
 local TechNews = WidgetContainer:extend{
     name = "zhifou",
     is_doc_only = false,
-    version = "0.1.22",
+    version = "0.1.23",
 }
 
 -- 自测只执行一次：插件用 dofile 加载，模块级变量会随 UI 重建被重置，
@@ -286,6 +302,21 @@ end
 --- 图片是否转灰度（默认开：墨水屏上彩色没有意义，灰度 JPEG 更小；
 -- 支持的图床见 imgurl 的 gray_recipe，不支持的自动作罢）
 --- 图片分辨率设置：读回用户选的宽度；返回 nil 表示「自动（按屏幕宽度）」
+--- 改设置要清当天缓存时，豁免正在阅读的那一期（否则会把在读文档连进度一起删掉）
+function TechNews:clearTodayCache()
+    storage:clear_date(today_str(), self:openedIssueNames())
+end
+
+--- 当前打开着的期文件名集合（未打开本插件文档时返回 nil）
+function TechNews:openedIssueNames()
+    local doc = self.ui and self.ui.document
+    local path = doc and doc.file
+    if not path then return nil end
+    local name = path:match("([^/\\]+)$")
+    if not name then return nil end
+    return { [name] = true }
+end
+
 function TechNews:imageWidthSetting()
     local value = G_reader_settings:readSetting("zhifou_image_width")
     if value == nil or value == "auto" then return nil end
@@ -314,12 +345,17 @@ end
 --- 保存图片分辨率；改完当天缓存作废（与图片开关同样的语义）
 -- @param value 数字（像素宽）或 nil（自动）
 function TechNews:setImageWidth(value)
+    -- 值没变就什么都不做：否则在同一档上再点一次会白清当天缓存
+    -- （正在读的那期虽已豁免，但重新抓十几 MB 也毫无意义）
+    local current = self:imageWidthSetting()
+    local wanted = value and tonumber(value) or nil
+    if current == wanted then return end
     if value == nil then
         G_reader_settings:delSetting("zhifou_image_width")
     else
         G_reader_settings:saveSetting("zhifou_image_width", tonumber(value))
     end
-    storage:clear_date(today_str())
+    self:clearTodayCache()
 end
 
 function TechNews:withGrayImages()
@@ -334,7 +370,7 @@ end
 --- 保存订阅源设置；启用集合变化后当天缓存作废，下次打开重建
 function TechNews:setSourceSetting(set)
     G_reader_settings:saveSetting("zhifou_sources", set)
-    storage:clear_date(today_str())
+    self:clearTodayCache()
 end
 
 --- 当前文档是否由本插件生成（路径判定：数据目录下的 zhifou/，覆盖缓存期与收藏快照；
@@ -588,12 +624,22 @@ function TechNews:askMergedIssueRange()
 end
 
 --- 「订阅源设置」子菜单：每个登记源一个勾选项（勾选即生效并清今日缓存）
---- 复选/单选条目点击后原地刷新。
--- KOReader 只在条目带 checked/checked_func 时才会自动 updateItems（touchmenu.lua
--- 的 onMenuSelect），而插件用 ☑/☐ 写进 text_func，所以要在回调里自己刷新，
--- 否则点了之后标记不变、要退出菜单再进才更新。回调的第一个参数就是菜单本体。
-local function refresh_menu(menu)
-    if menu and menu.updateItems then menu:updateItems() end
+--- 进度对话框的点击加固（两个已知坑都在 KOReader 的 ProgressbarDialog 里）：
+--   1) 它的 onDismiss 不返回 true → 这一次点击会继续下发到下层首页菜单，
+--      表现为「点进度条取消更新的同时也点中了下面的条目」（可能又触发一次更新）
+--   2) 安装阶段（备份→替换两次 rename 之间）被 SIGKILL 会留下 .backup 目录，
+--      重启后插件直接消失且无法自愈 → 这一段必须拒绝取消
+-- @param is_locked 可选函数：返回 true 表示当前阶段不接受取消
+local function guard_progress_dialog(dialog, is_locked)
+    local orig_dismiss = dialog.onDismiss
+    dialog.onDismiss = function(self, ...)
+        if is_locked and is_locked() then
+            return true -- 消费掉这次点击，但不关闭、不取消
+        end
+        if orig_dismiss then orig_dismiss(self, ...) end
+        return true -- 已消费：不要让事件穿透到下层菜单
+    end
+    dialog.onTapClose = dialog.onDismiss
 end
 
 function TechNews:getSourceSettingItems()
@@ -606,7 +652,7 @@ function TechNews:getSourceSettingItems()
                 return mark .. source.name
             end,
             keep_menu_open = true,
-            callback = function(menu)
+            callback = function()
                 -- 以当前启用集合为基准翻转本项，另存为新集合
                 local ids = {}
                 for _, adapter in ipairs(subscriptions.enabled(registry, self:sourceSetting())) do
@@ -619,7 +665,6 @@ function TechNews:getSourceSettingItems()
                     set[source.id] = true
                 end
                 self:setSourceSetting(set)
-                refresh_menu(menu)
             end,
         }
     end
@@ -635,79 +680,133 @@ function TechNews:checkSourceConnectivity()
         UIManager:show(InfoMessage:new{ text = "尚未订阅任何源（去「订阅源设置」勾选）" })
         return
     end
+    -- 目标在主进程先算好：子进程只做纯探测（不碰 UI）
+    local targets = {}
+    for _, source in ipairs(sources) do
+        targets[#targets + 1] = {
+            name = source.name, feed = source.feed, mode = source.mode,
+        }
+    end
+
+    -- 进度经文件回传（子进程里 Trapper:info 会 yield 卡死，只能写文件）
+    local progress_path = storage.dir .. "selfcheck-progress"
+    local function write_progress(index, name)
+        local file = io.open(progress_path .. ".tmp", "wb")
+        if not file then return end
+        file:write(tostring(index), "\t", tostring(name or ""))
+        file:close()
+        os.rename(progress_path .. ".tmp", progress_path)
+    end
+    local function read_progress()
+        local file = io.open(progress_path, "rb")
+        if not file then return nil end
+        local content = file:read("*a")
+        file:close()
+        local index = content:match("^(%d+)\t")
+        if not index then return nil end
+        return tonumber(index)
+    end
+    local function remove_progress()
+        os.remove(progress_path)
+        os.remove(progress_path .. ".tmp")
+    end
+
+    remove_progress()
     Trapper:wrap(function()
         local ProgressbarDialog = require("ui/widget/progressbardialog")
-        local socket = require("socket")
-        local now = socket.gettime or os.time
-        local started_all = now()
-        local lines, slowest = {}, nil
-        local reachable, probed = 0, 0
-
-        -- 与「设置 → 检查更新」同款的进度条对话框：真实进度条 + 点击即取消
-        -- （ProgressbarDialog 的 redrawProgressbar 内部会 forceRePaint，
-        --   所以在同步的网络探测循环里也能立即刷新，不用让出协程）
-        local cancelled = false
         local dialog = ProgressbarDialog:new{
             title = string.format("正在自检订阅源…（共 %d 个）", #sources),
             progress_max = #sources,
-            -- main.lua 顶部已 require 过 Device，直接用（墨水屏刷新慢，降频）
+            -- main.lua 顶部已 require 过 Device；墨水屏刷新慢，降频
             refresh_time_seconds = Device:hasEinkScreen() and 0.5 or 0.1,
         }
-        dialog.dismiss_callback = function() cancelled = true end
+        -- 点击对话框 = 取消（Trapper 收到 dismiss 后 SIGKILL 子进程），
+        -- 并消费掉这次点击，避免穿透到下层首页菜单
+        guard_progress_dialog(dialog)
         dialog:show()
-        UIManager:forceRePaint()
 
-        for i, source in ipairs(sources) do
-            if cancelled then break end
-            dialog:reportProgress(i - 1) -- 已完成的个数
-            if not source.feed then
-                lines[#lines + 1] = string.format("· %s：自定义源，跳过（%s）",
-                    source.name, source.mode or "?")
-            else
-                probed = probed + 1
-                local started = now()
-                local ok, body, err = pcall(http.get, source.feed, 10, 20, 0, {
-                    max_bytes = 64 * 1024, allow_truncated = true,
-                })
-                if not ok then
-                    body, err = nil, "探测异常：" .. tostring(body)
-                end
-                local elapsed = now() - started
-                if body then
-                    reachable = reachable + 1
-                    lines[#lines + 1] = string.format("✓ %s：%.1f 秒", source.name, elapsed)
-                    if not slowest or elapsed > slowest.elapsed then
-                        slowest = { name = source.name, elapsed = elapsed }
+        local active = true
+        local function poll()
+            if not active then return end
+            local index = read_progress()
+            if index then
+                dialog:reportProgress(math.max(0, math.min(index - 1, #sources)))
+            end
+            UIManager:scheduleIn(0.5, poll)
+        end
+        poll()
+
+        -- 探测放子进程：① 界面不冻结（输入照常处理，取消才真的可用）
+        -- ② 某个域名解析挂住时，取消能把它 SIGKILL 掉——主进程里跑就只能等
+        local completed, report = Trapper:dismissableRunInSubprocess(function()
+            local socket = require("socket")
+            local http_mod = require("zhifou.http")
+            local now = socket.gettime or os.time
+            local started_all = now()
+            local lines, reachable, probed, slowest = {}, 0, 0, nil
+            for i, target in ipairs(targets) do
+                write_progress(i, target.name)
+                if target.feed then
+                    probed = probed + 1
+                    local started = now()
+                    local ok, body, err = pcall(http_mod.get, target.feed, 10, 20, 0, {
+                        max_bytes = 64 * 1024, allow_truncated = true,
+                    })
+                    if not ok then
+                        body, err = nil, "探测异常：" .. tostring(body)
+                    end
+                    local elapsed = now() - started
+                    if body then
+                        reachable = reachable + 1
+                        lines[#lines + 1] = string.format("✓ %s：%.1f 秒",
+                            target.name, elapsed)
+                        if not slowest or elapsed > slowest.elapsed then
+                            slowest = { name = target.name, elapsed = elapsed }
+                        end
+                    else
+                        lines[#lines + 1] = string.format("✗ %s：%s",
+                            target.name, tostring(err))
                     end
                 else
-                    lines[#lines + 1] = string.format("✗ %s：%s", source.name, tostring(err))
+                    lines[#lines + 1] = string.format("· %s：自定义源，跳过（%s）",
+                        target.name, target.mode or "?")
                 end
             end
-        end
+            local head = string.format("可达 %d/%d", reachable, probed)
+            if probed < #targets then
+                head = head .. string.format("（另 %d 个自定义源未探测）",
+                    #targets - probed)
+            end
+            if slowest then
+                head = head .. string.format("；最慢 %s（%.1f 秒）",
+                    slowest.name, slowest.elapsed)
+            end
+            head = head .. string.format("；共耗时 %d 秒",
+                math.floor(now() - started_all))
+            return head .. "\n\n" .. table.concat(lines, "\n")
+                .. "\n\n（仅探测订阅源入口是否可达，不代表正文抽取正常）"
+        end, dialog, true)
 
-        dialog.dismiss_callback = nil -- 收尾关闭不再当作取消
-        if cancelled then
-            dialog:close()
+        active = false
+        UIManager:unschedule(poll)
+        remove_progress()
+        dialog.dismiss_callback = nil
+        dialog:close()
+
+        if not completed then
             UIManager:show(InfoMessage:new{ text = "已取消自检", timeout = 2 })
             return
         end
-        dialog:reportProgress(#sources)
-        dialog:close()
-
-        local head = string.format("可达 %d/%d", reachable, probed)
-        if probed < #sources then
-            head = head .. string.format("（另 %d 个自定义源未探测）", #sources - probed)
+        if type(report) ~= "string" or report == "" then
+            UIManager:show(InfoMessage:new{
+                text = "自检没有返回结果（子进程可能不可用）", timeout = 4,
+            })
+            return
         end
-        if slowest then
-            head = head .. string.format("；最慢 %s（%.1f 秒）", slowest.name, slowest.elapsed)
-        end
-        head = head .. string.format("；共耗时 %d 秒", math.floor(now() - started_all))
-        local msg = head .. "\n\n" .. table.concat(lines, "\n")
-            .. "\n\n（仅探测订阅源入口是否可达，不代表正文抽取正常）"
-        logger.info("zhifou connectivity:", head)
+        logger.info("zhifou connectivity:", report:match("^[^\n]*") or "")
         UIManager:show(TextViewer:new{
             title = "源连通性自检",
-            text = msg,
+            text = report,
         })
     end)
 end
@@ -792,7 +891,11 @@ function TechNews:runNetworkDiagnosis()
 end
 
 --- 「设置」子菜单：管理收藏（仅有收藏时）、订阅源设置、包含图片、清理全部缓存
---- 设置菜单：按主题分组，避免平铺一堆复选框与诊断工具
+--- 设置菜单：按主题分组，避免平铺一堆复选框与诊断工具。
+-- 勾选项的「原地刷新」由首页菜单自己负责：home_menu.onMenuSelect 对
+-- keep_menu_open 且无子表的条目会调用 callback() 后再 updateItems()，
+-- 所以回调里不需要（也不能）自己刷新——KOReader 的 Menu:onMenuChoice 不传参。
+-- 标记统一用 ☑/☐ 写进 text_func（RadioMark 的 ◉/◯ 在默认字体里渲染不出来）
 --   图片与显示 ▶ / 订阅源 ▶ / 缓存清理 / 检查更新 / 收藏 ▶（有收藏时）/ 诊断 ▶
 function TechNews:getSettingItems()
     local items = {}
@@ -808,12 +911,11 @@ function TechNews:getSettingItems()
                 text_func = function()
                     return (self:withImages() and "☑ " or "☐ ") .. "包含图片"
                 end,
-                callback = function(menu)
+                callback = function()
                     G_reader_settings:saveSetting("zhifou_with_images",
                         not self:withImages())
                     -- 切换后当天缓存作废，下次打开重新生成
-                    storage:clear_date(today_str())
-                    refresh_menu(menu)
+                    self:clearTodayCache()
                 end,
             },
             {
@@ -823,11 +925,10 @@ function TechNews:getSettingItems()
                     return (self:withGrayImages() and "☑ " or "☐ ")
                         .. "图片转灰度（省体积）"
                 end,
-                callback = function(menu)
+                callback = function()
                     G_reader_settings:saveSetting("zhifou_gray_images",
                         not self:withGrayImages())
-                    storage:clear_date(today_str())
-                    refresh_menu(menu)
+                    self:clearTodayCache()
                 end,
             },
             {
@@ -848,10 +949,9 @@ function TechNews:getSettingItems()
                                         auto_width)
                             end,
                             keep_menu_open = true,
-                            callback = function(menu)
+                            callback = function()
                                 self:setImageWidth(nil)
-                                refresh_menu(menu)
-                            end,
+                                        end,
                         },
                     }
                     for _, width in ipairs(images.PRESET_WIDTHS) do
@@ -863,19 +963,20 @@ function TechNews:getSettingItems()
                                             and "（默认）" or "")
                             end,
                             keep_menu_open = true,
-                            callback = function(menu)
+                            callback = function()
                                 self:setImageWidth(width)
-                                refresh_menu(menu)
-                            end,
+                                        end,
                         }
                     end
+                    -- 说明行必须用 select_enabled：KOReader 的菜单只认这个字段，
+                    -- 写成 enabled=false 就成了普通可点条目 —— 点它会关闭整个首页
                     entries[#entries + 1] = {
                         text = "越宽越清晰、流量越大",
-                        enabled = false,
+                        select_enabled = false,
                     }
                     entries[#entries + 1] = {
                         text = "换档后当天缓存清空",
-                        enabled = false,
+                        select_enabled = false,
                     }
                     return entries
                 end,
@@ -953,6 +1054,19 @@ function TechNews:getSettingItems()
                     keep_menu_open = true,
                     callback = function()
                         self:runNetworkDiagnosis()
+                    end,
+                },
+                {
+                    text = "重新允许 gzip 压缩",
+                    keep_menu_open = true,
+                    callback = function()
+                        -- 熔断（zhifou_gzip_off）是落盘的：万一是误判（某段数据坏了），
+                        -- 用户在这里一键恢复，不必去改 settings.reader.lua
+                        local http_mod = require("zhifou.http")
+                        http_mod.reset_gzip()
+                        UIManager:show(InfoMessage:new{
+                            text = "已重新允许压缩，下次抓取生效", timeout = 2,
+                        })
                     end,
                 },
                 {
@@ -1493,6 +1607,7 @@ function TechNews:fetchSource(source, limit, progress, range)
     -- 2) 下载图片（可关闭；张数上限 + 字节额度，见 zhifou/images.lua）
     local downloaded = {}
     local image_skips = 0
+    local skip_reasons = {}
     local hit_deadline = false   -- 图片阶段是否因整期时间预算提前收手
     if self:withImages() then
         local pending = {}
@@ -1517,6 +1632,9 @@ function TechNews:fetchSource(source, limit, progress, range)
         -- 额度随分辨率放大——选了更高分辨率不该变成「更多图被略过」
         local budget = (progress and progress.image_bytes_budget)
             or images.new_budget({ width = target_width })
+        -- budget 在合并期是跨源共享的，summary().skipped 是**累计值**；
+        -- 记下基线，最后报给用户的是「本源跳过了几张」（此前逐源累加会翻倍虚报）
+        local skipped_before = budget.skipped or 0
         local deadline = progress and progress.deadline
         local started_at = os.time()
         -- 按图床记账：同一 host 连续失败到阈值就跳过它剩下的图
@@ -1570,7 +1688,8 @@ function TechNews:fetchSource(source, limit, progress, range)
             end
         end
         local summary = budget:summary()
-        image_skips = summary.skipped
+        image_skips = math.max(0, (summary.skipped or 0) - skipped_before)
+        skip_reasons = summary.skipped_reasons or {}
         logger.info("zhifou images:",
             source.id,
             "pending=" .. tostring(#pending),
@@ -1583,8 +1702,32 @@ function TechNews:fetchSource(source, limit, progress, range)
     -- 字节额度对象要跨源复用：合并期由调用方持有并传回下一源
     return {
         items = result, images = downloaded,
-        image_skips = image_skips, budget_hit = hit_deadline,
+        image_skips = image_skips, skip_reasons = skip_reasons,
+        budget_hit = hit_deadline,
     }
+end
+
+--- 把「跳过原因」计数拼成一句人话（原来一律写成「过大」，连接失败也这么写）
+local SKIP_REASON_TEXT = {
+    too_large = "过大",
+    over_budget = "整期额度已满",
+    not_image = "不是图片",
+    download_failed = "下载失败",
+    host_down = "图床不可用",
+}
+
+local function describe_skips(total, reasons)
+    if not total or total <= 0 then return nil end
+    local parts = {}
+    for key, count in pairs(reasons or {}) do
+        local text = SKIP_REASON_TEXT[key] or tostring(key)
+        parts[#parts + 1] = string.format("%s %d 张", text, count)
+    end
+    table.sort(parts)
+    if #parts == 0 then
+        return string.format("%d 张图未取到", total)
+    end
+    return string.format("%d 张图未取到（%s）", total, table.concat(parts, "、"))
 end
 
 --- 生成 EPUB 并打开
@@ -1912,8 +2055,10 @@ function TechNews:openIssueRange(source, kind, date)
         end
         local title = string.format("%s · %s", source.name, range.title)
         local warnings = {}
-        if (bundle.image_skips or 0) > 0 then
-            warnings[#warnings + 1] = string.format("%d 张图过大已略过", bundle.image_skips)
+        local skip_text = describe_skips(bundle.image_skips, bundle.skip_reasons)
+        if skip_text then warnings[#warnings + 1] = skip_text end
+        if bundle.budget_hit then
+            warnings[#warnings + 1] = "图片阶段达到时间预算，剩余图片未下载"
         end
         self:buildAndOpen(issue_id, title, range.date, bundle.items, bundle.images, warnings)
         -- 结束立即收起进度消息（Trapper 不会自动关闭，需显式 clear；KOReader 惯例）
@@ -1976,6 +2121,8 @@ function TechNews:fetchAndOpenMerged(issue_id, date, range)
         -- 额度随「图片分辨率」设置放大（高分辨率下同一批图本就更大）
         local bytes_budget = images.new_budget({ width = self:imageTargetWidth() })
         local image_skips = 0
+        local skip_reasons = {}
+        local images_hit_deadline = false
         -- 整期时间预算：超了就停止后续源，并在完成提示里说明
         local deadline = os.time() + FETCH_BUDGET_SECONDS
         local skipped_by_budget = {}
@@ -1995,6 +2142,10 @@ function TechNews:fetchAndOpenMerged(issue_id, date, range)
                 for _ in pairs(bundle.images) do used = used + 1 end
                 image_budget = math.max(image_budget - used, 0)
                 image_skips = image_skips + (bundle.image_skips or 0)
+                for reason, count in pairs(bundle.skip_reasons or {}) do
+                    skip_reasons[reason] = (skip_reasons[reason] or 0) + count
+                end
+                if bundle.budget_hit then images_hit_deadline = true end
                 for _, item in ipairs(bundle.items) do
                     all[#all + 1] = item
                 end
@@ -2057,8 +2208,10 @@ function TechNews:fetchAndOpenMerged(issue_id, date, range)
             warnings[#warnings + 1] = fail.name
         end
         -- 有图被略过也要说一声（否则用户只看到图片数变少，不知道是体积闸门）
-        if image_skips > 0 then
-            warnings[#warnings + 1] = string.format("%d 张图过大已略过", image_skips)
+        local skip_text = describe_skips(image_skips, skip_reasons)
+        if skip_text then warnings[#warnings + 1] = skip_text end
+        if images_hit_deadline then
+            warnings[#warnings + 1] = "图片阶段达到时间预算，剩余图片未下载"
         end
         if #skipped_by_budget > 0 then
             warnings[#warnings + 1] = string.format("抓取超时已跳过 %d 个源（%s）",
@@ -2096,7 +2249,7 @@ end
 
 --- 清掉今日缓存并立即重新抓取合并期（带进度显示）
 function TechNews:refetchToday()
-    storage:clear_date(today_str())
+    self:clearTodayCache()
     self:openMergedIssue()
 end
 
@@ -2104,7 +2257,21 @@ end
 function TechNews:checkForUpdates()
     Trapper:wrap(function()
         Trapper:info("正在检查更新…（点击可取消）")
-        local release, err = updater.fetch_latest_release()
+        -- 逐候选/逐次重试都往 Trapper 汇报：Trapper:info 从第二次起会让出协程，
+        -- 输入才有机会被处理，「点击可取消」才不是空话（最坏 4 候选 × 2 次 × 30s）
+        local function update_try(_url, attempt, retry_err)
+            if attempt and attempt > 1 then
+                return Trapper:info(string.format(
+                    "正在检查更新…（第 %d 次重试：%s，点击可取消）",
+                    attempt, tostring(retry_err or "网络错误")))
+            end
+            return Trapper:info("正在检查更新…（点击可取消）")
+        end
+        local release, err = updater.fetch_latest_release(update_try)
+        if err == "已取消" then
+            Trapper:clear()
+            return
+        end
         Trapper:clear()
         if not release then
             UIManager:show(InfoMessage:new{
@@ -2178,14 +2345,20 @@ function TechNews:installUpdate(release)
         progress_max = 100,
         refresh_time_seconds = 0.5,
     }
+    -- 进入安装阶段后不再允许取消（见 guard_progress_dialog 的说明）
+    local install_started = false
+    guard_progress_dialog(dialog, function() return install_started end)
     dialog:show()
 
     local active = true
     local function poll()
         if not active then return end
         local stage, percent = read_progress()
+        if stage == "install" or stage == "complete" then
+            install_started = true
+        end
         if stage == "downloading" then
-            dialog:reportProgress(percent)
+            dialog:reportProgress(math.min(percent or 0, 100))
         elseif stage == "install" or stage == "complete" then
             dialog:reportProgress(100)
         end
@@ -2228,6 +2401,10 @@ function TechNews:installUpdate(release)
             local msg
             if not completed then
                 msg = "已取消更新"
+            elseif type(result) ~= "table" then
+                -- Trapper 在子进程里抛异常/没写回结果时就是 (true, nil)；
+                -- 这里不能去索引 result，否则什么都不弹、用户以为更新没反应
+                msg = "更新失败：子进程未返回结果（可重试，或到「诊断 → 最近错误」看日志）"
             else
                 local prefix = result.phase == "download" and "下载失败：" or "安装失败："
                 msg = prefix .. tostring(result.error or "未知错误")

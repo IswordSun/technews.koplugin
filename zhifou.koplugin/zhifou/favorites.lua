@@ -498,7 +498,7 @@ function favorites.add(article, issue_path, progress_cb, with_gray, widths)
                 end
             end
             -- 与每日抓取同规则：CDN 缩放/转 JPEG/灰度 → 魔数判型 → 体积额度
-            local image = images.fetch(url, {
+            local image, img_err = images.fetch(url, {
                 download = function(target)
                     return http.get(target, nil, nil, nil, {
                         referer = imgurl.referer(target),
@@ -512,7 +512,11 @@ function favorites.add(article, issue_path, progress_cb, with_gray, widths)
             })
             if image then
                 image_map[url] = image
-            elseif image == nil then
+            elseif img_err == "over_budget" then
+                -- 整篇额度已满：再下也是丢（每张最多 3MB），直接停
+                logger.info("zhifou favorites image budget exhausted:", url)
+                break
+            else
                 logger.info("zhifou favorites image skipped:", url)
             end
         end

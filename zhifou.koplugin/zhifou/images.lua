@@ -23,6 +23,8 @@ images.PRESET_WIDTHS = { 480, 600, 800, 1000, 1200, 1600 }
 images.MIN_WIDTH = 320      -- 目标宽度下限（再窄就看不清了）
 images.MAX_WIDTH = 2400     -- 目标宽度上限（再宽对墨水屏只是白花流量）
 images.MIN_DEGRADE_WIDTH = 160  -- 降档是最后手段：允许比目标下限更窄
+-- 兜底的绝对小宽度：CDN 对超高图有输出边长上限，只有这么窄才能取回（见 widths_for）
+images.FALLBACK_WIDTH = 480
 images.DEGRADE_RATIO = 0.6  -- 降档宽度 = 目标宽 × 0.6（原 800 → 480）
 
 --- 目标宽度下的体积额度缩放系数。
@@ -36,6 +38,7 @@ images.BUDGET_EXPONENT = 0.6
 --- 把基础额度按目标宽度放大（目标宽 ≤ 基准宽时原样返回）
 function images.scale_budget(bytes, target)
     target = tonumber(target) or images.DEFAULT_WIDTH
+    if target > images.MAX_WIDTH then target = images.MAX_WIDTH end
     if type(bytes) ~= "number" or target <= images.BUDGET_BASE_WIDTH then
         return bytes
     end
@@ -56,7 +59,15 @@ function images.widths_for(target)
     local degrade = math.floor(target * images.DEGRADE_RATIO + 0.5)
     if degrade < images.MIN_DEGRADE_WIDTH then degrade = images.MIN_DEGRADE_WIDTH end
     if degrade >= target then degrade = math.floor(target / 2) end
-    return { target, degrade }
+    -- 第三个候选是**绝对小档**：CDN 对超高图有输出边长硬上限（实测百度 BCE 输出高
+    -- 上限 16384：1000x7682 的图请求宽 >2133 就 400），此时只有足够小的宽度能救回来。
+    -- 若只按比例降档，目标宽 ≥861 时两个候选都超限 → 超高图一律被丢。
+    local list = { target }
+    if degrade ~= target then list[#list + 1] = degrade end
+    if images.FALLBACK_WIDTH < degrade then
+        list[#list + 1] = images.FALLBACK_WIDTH
+    end
+    return list
 end
 
 -- 未配置时的候选宽度（与 v0.1.20 之前的行为一致：800 → 480）
@@ -183,8 +194,11 @@ function images.fetch(url, opts)
 
     -- 候选目标：可重写时按宽度逐个尝试（目标宽 → 降档宽），不可重写时只下原图一次
     local targets, seen = {}, {}
+    -- 空表要当成「没给」：否则会退化成「直接下原图」（无缩放、无灰度）
+    local widths = opts.widths
+    if not widths or #widths == 0 then widths = images.WIDTHS end
     if opts.rewrite then
-        for _, width in ipairs(opts.widths or images.WIDTHS) do
+        for _, width in ipairs(widths) do
             local target = opts.rewrite(url, width, { gray = opts.gray })
             if target and target ~= url and not seen[target] then
                 seen[target] = true

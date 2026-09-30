@@ -42,6 +42,27 @@ local function save_broken_flag()
     end
 end
 
+--- 这次解压失败是否属于「平台不可用」（值得永久熔断）。
+-- 数据坏了 / 空体 / 编码不认，都是当次问题：重试明文即可，不该让设备永久降级。
+function http.is_platform_gzip_failure(reason)
+    reason = tostring(reason or "")
+    if reason:find("解压异常", 1, true) then return true end        -- 调用抛异常（符号缺失等）
+    if reason:find("zlib 不可用", 1, true) then return true end     -- 库/符号探测失败
+    if reason:find("解压模块不可用", 1, true) then return true end  -- require 失败
+    return false
+end
+
+--- 手动恢复 gzip（「诊断 → 重新允许 gzip」）：清内存标记与落盘标志
+function http.reset_gzip()
+    gzip_state.broken = false
+    gzip_state.checked = false
+    gzip_state.usable = false
+    local settings = rawget(_G, "G_reader_settings")
+    if settings and settings.delSetting then
+        settings:delSetting(http.GZIP_SETTING)
+    end
+end
+
 --- 是否可以声明 Accept-Encoding: gzip
 function http.gzip_usable()
     if gzip_state.broken then return false end
@@ -188,18 +209,19 @@ local function request_once(url, block_timeout, total_timeout, referer, opts)
             cafile = tls.cafile,
         })
     end)
+    -- 复位全局超时：socketutil:set_timeout 改的是 KOReader 全局的 block_timeout，
+    -- 不复位会让之后所有不自己设超时的 socket 继承我们的 10s（KOReader 默认 60s）
+    pcall(function() socketutil:reset_timeout() end)
     if not call_ok then
         return nil, "请求异常（" .. tostring(code) .. "）"
     end
-    if truncated and opts.allow_truncated then
-        -- 只关心「通不通」的调用方（如连通性自检）：拿到够用的数据就算成功
-        return table.concat(body), nil, { headers = headers, truncated = true }
-    end
-    if truncated then
+    -- 先把「连上了吗、状态码是 200 吗」判完，再谈截断：否则「503 + 大错误页」
+    -- 在 allow_truncated 下会被自检报成可达，而且返回的还是未解压的字节
+    if truncated and not opts.allow_truncated then
         return nil, string.format("响应过大（超过 %d 字节已中止）", max_bytes)
     end
     if not code then
-        return nil, tostring(headers) or "request failed"
+        return nil, (headers ~= nil and tostring(headers)) or "请求失败（无状态码）"
     end
     if type(code) ~= "number" then
         -- "closed" / "timeout" 等连接层错误码
@@ -217,6 +239,12 @@ local function request_once(url, block_timeout, total_timeout, referer, opts)
     -- 少数 CDN 即使没被请求也会回 gzip，所以这里只看响应头，不看我们请求了什么
     local encoding = headers and headers["content-encoding"]
     if encoding and encoding ~= "" and encoding ~= "identity" then
+        encoding = tostring(encoding):lower():gsub("%s", "")
+        -- 只解我们声明过的两种：其它编码（br/zstd…）既没被请求，也不该塞给 inflate
+        -- ——否则要么报错，要么被当裸 deflate 解出乱码
+        if not (encoding == "gzip" or encoding == "x-gzip" or encoding == "deflate") then
+            return nil, string.format("不支持的压缩编码（%s）", encoding), meta
+        end
         local ok_mod, gzip = pcall(require, "zhifou.gzip")
         local plain, unzip_err
         if ok_mod and type(gzip) == "table" and type(gzip.inflate) == "function" then
@@ -228,12 +256,18 @@ local function request_once(url, block_timeout, total_timeout, referer, opts)
             unzip_err = "解压模块不可用"
         end
         if not plain then
-            -- 本平台解压不可靠：永久改走明文（并落盘），本次由 http.get 用明文立刻重试
-            http.disable_gzip(unzip_err)
+            -- 只有「平台性失败」才永久熔断（zlib 不可用 / 模块加载不了 / 调用抛异常）；
+            -- 「这段数据坏了」「gzip 头但空体」是当次故障，重试明文即可，
+            -- 不该让设备从此不再压缩（否则 2MB 的 feed 永久退回 30s 超时 ×4 次）
+            if http.is_platform_gzip_failure(unzip_err) then
+                http.disable_gzip(unzip_err)
+            end
             return nil, string.format("解压失败（%s：%s）", tostring(encoding), tostring(unzip_err)), meta
         end
+        if opts.allow_truncated and truncated then meta.truncated = true end
         return plain, nil, meta
     end
+    if opts.allow_truncated and truncated then meta.truncated = true end
     return body_text, nil, meta
 end
 
@@ -267,10 +301,11 @@ function http.get(url, block_timeout, total_timeout, retries, opts)
             and tostring(err):find("解压失败", 1, true) then
             -- 解压不可靠（见 http.disable_gzip）：立刻用明文重取一次，
             -- 不计入重试次数——用户不该因为压缩这个优化而抓不到内容
-            local plain_opts = {
-                referer = opts.referer, max_bytes = opts.max_bytes,
-                allow_truncated = opts.allow_truncated, no_gzip = true,
-            }
+            -- 整体复制 opts：早先手写白名单漏了 verify_tls/cafile，
+            -- 于是「解压失败 → 明文重取」这一跳会静默丢掉证书校验（更新链受影响）
+            local plain_opts = {}
+            for key, value in pairs(opts) do plain_opts[key] = value end
+            plain_opts.no_gzip = true
             body, err, meta = request_once(url, block_timeout, total_timeout, referer, plain_opts)
         end
         if body then
