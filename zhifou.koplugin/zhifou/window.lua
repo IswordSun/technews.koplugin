@@ -25,6 +25,26 @@ end
 --- 过滤给定半开时间区间 [start_ts, end_ts) 的条目，按 ts 倒序并截断。
 -- @param include_no_ts 无时间戳条目是否视为命中（今日/近一周为 true，指定历史某日为 false）
 -- @return selected、区间内实际条数（截断前）
+--- 按时间**从早到晚**排序（阅读顺序）；没有时间戳的排在最后。
+-- 说明：这是展示/阅读顺序。取「最新的 N 条」是另一回事（见 filter_range：
+-- 先按倒序选出最新的 N 条，再翻成早→晚），两者不能混。
+-- @return 新表（不改动入参）
+function window.sort_by_time(items)
+    local sorted = {}
+    for i, item in ipairs(items) do sorted[i] = item end
+    table.sort(sorted, function(a, b)
+        local ta, tb = a.ts, b.ts
+        if ta and tb then
+            if ta ~= tb then return ta < tb end
+            return false
+        end
+        if ta then return true end      -- 有时间戳的在前
+        if tb then return false end
+        return false
+    end)
+    return sorted
+end
+
 function window.filter_range(items, max_items, start_ts, end_ts, include_no_ts)
     local selected = {}
     for _, item in ipairs(items) do
@@ -36,14 +56,16 @@ function window.filter_range(items, max_items, start_ts, end_ts, include_no_ts)
         end
     end
     local n_selected = #selected
+    -- 先按时间倒序取「最新的 max_items 条」（限量语义不变：不能因为排序方向
+    -- 就把当天的晚班新闻挤掉、只留清早的），再把结果翻成早→晚的阅读顺序
     table.sort(selected, function(a, b)
         return (a.ts or 0) > (b.ts or 0)
     end)
-    local result = {}
+    local newest = {}
     for i = 1, math.min(#selected, max_items) do
-        result[i] = selected[i]
+        newest[i] = selected[i]
     end
-    return result, n_selected
+    return window.sort_by_time(newest), n_selected
 end
 
 --- 严格今日（本地 0 点起，不回补）。

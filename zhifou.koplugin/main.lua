@@ -2244,16 +2244,12 @@ function TechNews:fetchAndOpenMerged(issue_id, date, range)
                 function() self:fetchAndOpenMerged(issue_id, date, range) end)
             return
         end
-        -- 按时间倒序排列（无时间的排最后）
-        table.sort(all, function(a, b)
-            return (a.ts or 0) > (b.ts or 0)
-        end)
+        -- 按时间**从早到晚**排列（阅读顺序；无时间戳的排最后）
+        local ordered = window.sort_by_time(all)
         -- 跨源去重：同一条新闻两源都报时只保留正文更全的一条
-        local kept, removed = dedupe.filter(all)
-        -- 去重保留更全条目时会把它移到列表末尾，这里恢复按时间倒序
-        table.sort(kept, function(a, b)
-            return (a.ts or 0) > (b.ts or 0)
-        end)
+        local kept, removed = dedupe.filter(ordered)
+        -- 去重保留更全条目时会把它移到列表末尾，这里恢复早→晚顺序
+        kept = window.sort_by_time(kept)
         for _, pair in ipairs(removed) do
             logger.info("zhifou dedupe:",
                 pair.kept.title, "|", pair.dropped.title, "|",

@@ -80,7 +80,7 @@ do
 end
 
 ----------------------------------------------------------------------
--- 全部为今日条目：只返回今日条目，按 ts 倒序
+-- 全部为今日条目：只返回今日条目，按 ts 早→晚（阅读顺序）
 ----------------------------------------------------------------------
 do
     local items = {
@@ -91,7 +91,7 @@ do
     local selected, n_today = window.filter(items, 10)
     eq(n_today, 3, "全部为今日条目时 n_today 等于今日条数")
     eq(#selected, 3, "全部为今日条目时全部返回")
-    eq_ids(selected, { "b", "a", "c" }, "今日条目按 ts 倒序返回")
+    eq_ids(selected, { "c", "a", "b" }, "今日条目按 ts 早→晚返回")
 end
 
 ----------------------------------------------------------------------
@@ -106,8 +106,34 @@ do
     local selected, n_today = window.filter(items, 100)
     eq(n_today, 2, "严格模式 n_today 只统计今日条目")
     eq(#selected, 2, "今日只有 2 条、旧条目有 10 条时结果仍为 2 条（不回补）")
-    eq_ids(selected, { "t1", "t2" }, "结果只含今日条目且按 ts 倒序")
+    eq_ids(selected, { "t2", "t1" }, "结果只含今日条目且按 ts 早→晚")
     eq(count_older(selected, midnight), 0, "结果中不含任何 0 点之前的旧条目")
+end
+
+----------------------------------------------------------------------
+-- 阅读顺序：早→晚；限量仍取「最新的 N 条」；无时间戳的排最后
+----------------------------------------------------------------------
+do
+    local items = {}
+    for i = 1, 10 do
+        items[i] = item(midnight + i * 60, "i" .. i)   -- i1 最早 … i10 最晚
+    end
+    local selected = window.filter(items, 3)
+    -- 限量取最新 3 条（i8/i9/i10），再按早→晚排列
+    eq_ids(selected, { "i8", "i9", "i10" },
+        "限量取最新的 3 条，但按早→晚排列")
+
+    local mixed = {
+        item(midnight + 300, "late"),
+        item(midnight + 100, "early"),
+        { id = "none", title = "无时间", ts = nil },
+    }
+    local ordered = window.sort_by_time(mixed)
+    eq_ids(ordered, { "early", "late", "none" }, "早→晚，没有时间戳的排最后")
+    eq(ordered[3].title, "无时间", "没有时间戳的排最后")
+
+    local same = { item(100, "x"), item(100, "y") }
+    eq(#window.sort_by_time(same), 2, "同一时刻的条目不丢")
 end
 
 ----------------------------------------------------------------------
@@ -129,7 +155,7 @@ do
     local items = { item(m, "exact"), item(m - 1, "just_before"), item(m + 1, "just_after") }
     local selected, n_today = window.filter(items, 10)
     eq(n_today, 2, "恰好 0 点算今日，0 点前 1 秒不算")
-    eq_ids(selected, { "just_after", "exact" }, "恰好 0 点的条目被选中，前 1 秒被排除")
+    eq_ids(selected, { "exact", "just_after" }, "恰好 0 点的条目被选中（早→晚），前 1 秒被排除")
 end
 
 ----------------------------------------------------------------------
@@ -159,7 +185,7 @@ do
     }
     local selected, n_today = window.filter(items, 10)
     eq(n_today, 4, "有 ts 与无 ts 的今日条目都计入 n_today")
-    eq_ids({ selected[1], selected[2] }, { "t2", "t1" }, "有 ts 条目按 ts 倒序排在最前")
+    eq_ids({ selected[1], selected[2] }, { "t1", "t2" }, "有 ts 条目按 ts 早→晚排在最前")
     ok(selected[3].ts == nil and selected[4].ts == nil,
         "无 ts 条目排在有 ts 条目之后",
         ("ids=%s,%s"):format(selected[3].id, selected[4].id))
@@ -174,7 +200,7 @@ do
     local selected, n_today = window.filter(items, 3)
     eq(#selected, 3, "可用条目多于 max_items 时按 max_items 截断")
     eq(n_today, 5, "截断后 n_today 仍为未截断的今日条数")
-    eq_ids(selected, { "t5", "t4", "t3" }, "截断保留最新的 max_items 条")
+    eq_ids(selected, { "t3", "t4", "t5" }, "截断保留最新的 max_items 条（并按早→晚排列）")
 
     -- 混入旧条目时也只截断今日条目，旧条目不会顶上
     local mixed = { item(midnight + 60, "t1"), item(midnight + 30, "t2") }
@@ -225,8 +251,8 @@ do
     }
     local selected, n = window.filter_range(items, 10, start_ts, end_ts, false)
     eq(n, 3, "昨日区间命中数正确（含 0 点整与最后一秒，不含 0 点前 1 秒）")
-    eq_ids(selected, { "y_last", "y_morning", "y_start" }, "昨日区间按 ts 倒序")
-    eq(selected[#selected].id, "y_start", "区间下界（含）保留")
+    eq_ids(selected, { "y_start", "y_morning", "y_last" }, "昨日区间按 ts 早→晚")
+    eq(selected[1].id, "y_start", "区间下界（含）保留")
 end
 
 ----------------------------------------------------------------------
@@ -259,7 +285,7 @@ do
     }
     local selected, n = window.filter_range(items, 10, start_ts, math.huge, true)
     eq(n, 3, "近一周命中（含无 ts），区间外旧条目被排除")
-    eq_ids(selected, { "t", "mid", "no_ts" }, "近一周按 ts 倒序，无 ts 排最后")
+    eq_ids(selected, { "mid", "t", "no_ts" }, "近一周按 ts 早→晚，无 ts 排最后")
 end
 
 ----------------------------------------------------------------------
@@ -271,7 +297,7 @@ do
     local selected, n = window.filter_range(items, 2, midnight, math.huge, true)
     eq(#selected, 2, "filter_range 按 max_items 截断")
     eq(n, 5, "filter_range 截断前条数正确")
-    eq_ids(selected, { "w5", "w4" }, "filter_range 截断保留最新条目")
+    eq_ids(selected, { "w4", "w5" }, "filter_range 截断保留最新条目（按早→晚排列）")
 end
 
 ----------------------------------------------------------------------
