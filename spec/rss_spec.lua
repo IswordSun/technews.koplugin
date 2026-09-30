@@ -324,5 +324,43 @@ do
 end
 
 ----------------------------------------------------------------------
+-- 时间字段合法性：越界值不能被 os.time 静默进位
+----------------------------------------------------------------------
+
+do
+    local function one_item(pub_date)
+        local xml = '<rss><channel><item><title>t</title><link>https://a.com/1</link>'
+            .. '<description>d</description>'
+            .. (pub_date and ('<pubDate>' .. pub_date .. '</pubDate>') or '')
+            .. '</item></channel></rss>'
+        return rss.parse(xml)[1]
+    end
+
+    local bad_month = one_item("Mon, 45 Sep 2026 10:00:00 +0800")
+    ok(bad_month ~= nil, "越界日期仍能解析出条目")
+    eq(bad_month and bad_month.ts, nil, "45 日 → 不产出时间戳（而不是静默进位到 10 月）")
+
+    local bad_iso = one_item("2026-13-45 10:00:00 +0800")
+    eq(bad_iso and bad_iso.ts, nil, "2026-13-45 → 不产出时间戳")
+
+    local ok_date = one_item("Wed, 23 Sep 2026 15:36:47 +0800")
+    ok(ok_date and type(ok_date.ts) == "number", "合法日期照常产出时间戳")
+end
+
+----------------------------------------------------------------------
+-- CDATA：中段/嵌套也要剥干净（旧实现只剥最外层）
+----------------------------------------------------------------------
+
+do
+    local xml = '<rss><channel><item><title><![CDATA[标题]]></title>'
+        .. '<link>https://a.com/cdata</link>'
+        .. '<description><![CDATA[前半段]]><![CDATA[后半段]]></description></item></channel></rss>'
+    local item = rss.parse(xml)[1]
+    eq(item.title, "标题", "整段 CDATA：正常剥离")
+    eq(item.summary, "前半段后半段", "中段 CDATA：全部剥离（不残留 <![CDATA[）")
+    ok(not tostring(item.summary):find("CDATA", 1, true), "结果里不含 CDATA 字样")
+end
+
+----------------------------------------------------------------------
 print(("%d checks, %d failed"):format(checks, failed))
 if failed > 0 then os.exit(1) end

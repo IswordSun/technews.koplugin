@@ -1,8 +1,17 @@
 -- zhifou/extract.lua — 网页正文抽取（容器定位 + <p> 段落过滤）
 
 local htmltext = require("zhifou.htmltext")
+local logger = require("logger")
 
 local extract = {}
+
+-- 退化守卫阈值：区域内可见文字 ≥ MIN_REGION_TEXT 字节，而抽出的正文文本
+-- 不足其 MIN_KEEP_RATIO 时，判定「容器还在但正文没认出来」（站点改版常见），
+-- 返回 nil 让调用方回退到 RSS 摘要——总比产出一篇只有标题的空壳文章强。
+-- 阈值取 5%：实测各正文源的正常保留率在 15%~85%（少数派 85%、infoq 24%、
+-- 快科技/9to5Mac 15~16%），真退化时接近 0，两边都留足余量
+local MIN_REGION_TEXT = 500
+local MIN_KEEP_RATIO = 0.05
 
 --- 从文章页 HTML 抽取内容块（文字 + 图片，保持顺序）。
 -- @param html 页面 HTML
@@ -72,6 +81,18 @@ function extract.blocks(html, opts)
     end
     local blocks = htmltext.blocks(region, opts.drop)
     if #blocks == 0 then return nil end
+
+    -- 退化守卫（见文件头注释）
+    local kept_text = 0
+    for _, block in ipairs(blocks) do
+        if block.text then kept_text = kept_text + #block.text end
+    end
+    local region_text = #htmltext.to_text(region)
+    if region_text >= MIN_REGION_TEXT and kept_text < region_text * MIN_KEEP_RATIO then
+        logger.warn("zhifou extract degraded:",
+            "kept=" .. kept_text, "of region_text=" .. region_text)
+        return nil
+    end
     return blocks
 end
 

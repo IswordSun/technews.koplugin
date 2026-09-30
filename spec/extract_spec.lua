@@ -11,6 +11,9 @@
 local spec_dir = (arg and arg[0] or "spec/extract_spec.lua"):match("^(.*)[/\\][^/\\]*$") or "."
 local plugin_dir = spec_dir .. "/../zhifou.koplugin"
 package.preload["util"] = function() return { htmlEntitiesToUtf8 = function(s) return s end } end
+package.preload["logger"] = function()
+    return { info = function() end, warn = function() end, dbg = function() end, err = function() end }
+end
 package.path = plugin_dir .. "/?.lua;" .. package.path
 local extract = require("zhifou.extract")
 
@@ -282,6 +285,31 @@ do
         starts = { '<div class="start-a">' },
         ends = { '</div>' },
     }), nil, "区域内无有效内容块：返回 nil")
+end
+
+----------------------------------------------------------------------
+-- 退化守卫：容器还在但正文没认出来 → 返回 nil（让调用方回退 RSS 摘要），
+-- 而不是产出一篇「只有标题」的空壳文章
+----------------------------------------------------------------------
+
+do
+    -- 改版后正文被切成大量 <10 字节的碎片（htmltext 会全部丢弃），
+    -- 区域内可见文字很多、但抽出的块只剩一点点 → 判定为退化
+    local degenerate = '<div id="content"><p>' .. string.rep("正常一段文字。", 2) .. '</p>'
+        .. string.rep("<p>短</p>", 600) .. '</div>'
+    eq(extract.blocks(degenerate, { start = '<div id="content">' }), nil,
+        "正文碎成大量短片段 → 返回 nil（交回上层用 RSS 摘要兜底）")
+
+    -- 正常文章不受影响（有真实段落、文本量足）
+    local normal = '<div id="content"><p>' .. string.rep("正常段落文字。", 30) .. '</p>'
+        .. '<p>' .. string.rep("第二段正常文字。", 30) .. '</p></div>'
+    local blocks = extract.blocks(normal, { start = '<div id="content">' })
+    ok(blocks ~= nil and #blocks >= 2, "正常文章仍能抽出段落块", tostring(blocks and #blocks))
+
+    -- 短区域不触发守卫（避免把短图文误判为退化）
+    local short_region = '<div id="content"><p>很短的正文。</p></div>'
+    ok(extract.blocks(short_region, { start = '<div id="content">' }) ~= nil,
+        "短正文不触发退化守卫")
 end
 
 ----------------------------------------------------------------------

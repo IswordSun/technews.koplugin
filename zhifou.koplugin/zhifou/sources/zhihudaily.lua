@@ -9,6 +9,8 @@
 -- 都能真正取到内容。请求走 http.lua 默认浏览器 UA；图片在 pic*.zhimg.com，
 -- 需要 Referer（见 imgurl.referer）。
 
+local logger = require("logger")
+
 local API = "https://news-at.zhihu.com/api/4"
 
 local adapter = {
@@ -141,6 +143,7 @@ function adapter.fetch(_, opts)
 
     -- 逐篇抓正文（0.2s 间隔限速，参考 zhihudaily 插件的最小请求间隔）
     local items = {}
+    local failed = 0
     for i, s in ipairs(stories) do
         if not Trapper:info(string.format(
                 "%s抓取 知乎日报 %d/%d…（点击可取消）", prefix, i, #stories)) then
@@ -148,8 +151,14 @@ function adapter.fetch(_, opts)
         end
         local data, err = get_json("/news/" .. tostring(s.id))
         if not data then
-            return nil, err
+            -- 单篇失败不再让整源失败：跳过这一篇继续（否则一篇 404 就整天没内容）；
+            -- 若全部失败，下方仍会明确报错
+            failed = failed + 1
+            logger.warn("zhifou zhihudaily story failed:",
+                tostring(s.id), tostring(err))
+            data = nil
         end
+        if data then
         -- 正文只取 content 容器（作者头像等在容器外，天然排除）；
         -- 作者名+简介单独提取，作为一条图注放在开头
         local raw = data.body or ""
@@ -171,9 +180,17 @@ function adapter.fetch(_, opts)
                 day = tonumber(d), hour = 12 },
             blocks = blocks,
         }
+        end
         if i < #stories then
             socket.sleep(0.2)
         end
+    end
+    if #items == 0 then
+        return nil, string.format("全部 %d 篇正文抓取失败", failed)
+    end
+    if failed > 0 then
+        logger.warn("zhifou zhihudaily partial:",
+            "ok=" .. #items, "failed=" .. failed)
     end
     return items
 end

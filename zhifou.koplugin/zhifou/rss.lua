@@ -17,7 +17,12 @@ local MONTHS = {
 
 local function strip_cdata(s)
     if not s then return nil end
-    s = s:gsub("^%s*<!%[CDATA%[", ""):gsub("%]%]>%s*$", "")
+    if s:find("<![CDATA[", 1, true) then
+        -- 全局剥离：<![CDATA[a]]><![CDATA[b]]> 这类中段/嵌套写法，
+        -- 只剥最外层会留下残缺的 "<![CDATA[" 进正文
+        s = s:gsub("<!%[CDATA%[", ""):gsub("%]%]>", "")
+        s = s:gsub("^%s+", ""):gsub("%s+$", "")
+    end
     return s
 end
 
@@ -89,6 +94,13 @@ local function parse_date(s)
         hour = hour, min = min, sec = sec,
     }
     if not as_local then return nil end
+    -- 字段合法性校验：os.time 会把越界值「规范化」（2026-13-45 → 2027-02-14），
+    -- 静默产出错误时间。回读一次，字段对不上就当作解析失败（视作无时间戳）。
+    local check = os.date("*t", as_local)
+    if not check or check.year ~= year or check.month ~= month or check.day ~= day
+        or check.hour ~= hour or check.min ~= min or check.sec ~= sec then
+        return nil
+    end
     return as_local + local_utc_offset() - zone_offset
 end
 

@@ -21,6 +21,36 @@ local function date_str_of(offset_days)
     return os.date("%Y-%m-%d", os.time() - (offset_days or 0) * 86400)
 end
 
+--- 从页面 HTML 里取出「早报条目」区段（导出仅供单测）。
+-- 旧实现取「首个 <article> 到最后一个 </article>」：页面改版后，
+-- 只要文末多出任何 <article> 区块（推荐位/评论），整段推荐区就会被当成正文吸进来。
+-- 现在按段校验结构：每段必须是 <article …>…</article> 且含 <h2> 与 /topic/ 链接，
+-- 从第一段匹配开始收集，遇到第一段不匹配即停（宁少勿滥）。
+local function daily_region(html)
+    if not html then return nil end
+    local segments, pos, started = {}, 1, false
+    while true do
+        local a = html:find("<article", pos, true)
+        if not a then break end
+        local b = html:find("</article>", a, true)
+        if not b then break end
+        local segment = html:sub(a, b + 8)   -- 含 "</article>"
+        local looks_like_item = segment:find("<h2", 1, true)
+            and segment:find("/topic/", 1, true)
+        if looks_like_item then
+            started = true
+            segments[#segments + 1] = segment
+        elseif started then
+            break   -- 条目区结束（后面的 article 不是早报条目）
+        end
+        pos = b + 9
+    end
+    if #segments == 0 then return nil end
+    return table.concat(segments)
+end
+
+adapter.daily_region = daily_region   -- 供 spec/readhub_spec.lua 直接测（运行时不用）
+
 --- 抓某天的早报内容块；返回 blocks，或 nil 与错误/空（err 为 nil 表示当天没有内容）
 local function fetch_day(iso, prefix)
     local http = require("zhifou.http")
@@ -34,19 +64,12 @@ local function fetch_day(iso, prefix)
     if not html then
         return nil, err
     end
-    -- 只取正文区（首个 <article> 到最后一个 </article>），避开导航与页脚噪音
-    local s = html:find("<article", 1, true)
-    if not s then
+    -- 只取「早报条目」区段（结构校验，见 daily_region），避开导航/页脚/文末推荐
+    local region = daily_region(html)
+    if not region then
         return nil, "页面结构已变化"
     end
-    local body_end, pos = s, s
-    while true do
-        local a, b = html:find("</article>", pos + 1, true)
-        if not a then break end
-        body_end = b
-        pos = a
-    end
-    local blocks = htmltext.blocks(html:sub(s, body_end), nil)
+    local blocks = htmltext.blocks(region, nil)
     if #blocks == 0 then
         return nil
     end
