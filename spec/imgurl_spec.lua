@@ -65,9 +65,13 @@ end
 -- IT之家：无查询串 / http 协议 / 其他子域名
 ----------------------------------------------------------------------
 do
+    -- PNG/GIF 源改用「CDN 直接输出 JPEG」的配方（实测 PNG 163KB → JPEG 127KB）
     eq(imgurl.rewrite("https://img.ithome.com/a/b.png", 800),
-        "https://img.ithome.com/a/b.png" .. recipe(800),
-        "无查询串的 IT之家图片：直接追加配方")
+        "https://img.ithome.com/a/b.png" .. recipe(800) .. "/format,f_jpg",
+        "IT之家 PNG：改用转 JPEG 配方")
+    eq(imgurl.rewrite("https://img.ithome.com/a/b.JPEG", 800),
+        "https://img.ithome.com/a/b.JPEG" .. recipe(800),
+        "IT之家 JPEG：后缀大小写不敏感，仍用原配方（不重复转码）")
     eq(imgurl.rewrite("http://img.ithome.com/a/b.jpg", 800),
         "http://img.ithome.com/a/b.jpg" .. recipe(800),
         "http:// 协议同样可重写且保留协议")
@@ -134,15 +138,21 @@ do
         { name = "少数派 cdnfile.sspai.com", base = "https://cdnfile.sspai.com/2026/09/20/a.jpg" },
     }
     for _, h in ipairs(new_hosts) do
-        eq(imgurl.rewrite(h.base, 800), h.base .. "?imageView2/2/w/800",
-            h.name .. "：无查询串 → w_800 精确网址")
-        eq(imgurl.rewrite(h.base, 480), h.base .. "?imageView2/2/w/480",
-            h.name .. "：无查询串 → w_480 精确网址")
-        local replaced = imgurl.rewrite(h.base .. "?imageView2/2/w/1200", 800)
-        eq(replaced, h.base .. "?imageView2/2/w/800",
+        local jpg_base = h.base:gsub("%.png$", ".jpg")
+        eq(imgurl.rewrite(jpg_base, 800), jpg_base .. "?imageView2/2/w/800",
+            h.name .. "：JPEG 无查询串 → w_800 精确网址")
+        eq(imgurl.rewrite(jpg_base, 480), jpg_base .. "?imageView2/2/w/480",
+            h.name .. "：JPEG 无查询串 → w_480 精确网址")
+        local replaced = imgurl.rewrite(jpg_base .. "?imageView2/2/w/1200", 800)
+        eq(replaced, jpg_base .. "?imageView2/2/w/800",
             h.name .. "：已有 imageView2 查询串被整段替换")
         eq(count(replaced, "?"), 1, h.name .. "：重写结果只有一个 ? 分隔符")
         eq(replaced:find("w/1200", 1, true), nil, h.name .. "：重写结果不含原宽度 1200")
+        -- 同一路径换成 PNG 后缀即走转 JPEG 配方（七牛实测 100KB → 22KB，4.6×）
+        local png_base = h.base:gsub("%.jpg$", ".png")
+        eq(imgurl.rewrite(png_base, 800),
+            png_base .. "?imageView2/2/w/800/format/jpg/quality/75",
+            h.name .. "：PNG 源 → 转 JPEG 配方")
     end
 
     eq(imgurl.rewrite("https://cdnfile.sspai.com/2026/09/20/a.jpg?x=1#frag", 800),
@@ -193,6 +203,77 @@ do
     eq(imgurl.referer("https://example.com/a.jpg"), nil, "未知域名返回 nil")
     eq(imgurl.referer(nil), nil, "referer(nil) 返回 nil")
     eq(imgurl.referer(""), nil, "referer 空串返回 nil")
+end
+
+----------------------------------------------------------------------
+-- 「一个」image.wufazhuce.com（URL 无后缀，七牛系）：原图 3001x2000/792KB
+-- 实测 w/800 → 800x533/37KB（21×）；无后缀时不带 lossy（判不出源格式）
+----------------------------------------------------------------------
+do
+    local base = "http://image.wufazhuce.com/FvbZIwVIXDCd8VYPldoC90YJz3iH"
+    eq(imgurl.rewrite(base, 800), base .. "?imageView2/2/w/800",
+        "「一个」图片：无后缀也重写（走通用七牛配方）")
+    eq(imgurl.rewrite(base, 480), base .. "?imageView2/2/w/480", "「一个」图片：宽度可降级")
+    eq(imgurl.referer(base), "https://wufazhuce.com/",
+        "「一个」图片需要站点 Referer（未变）")
+    eq(imgurl.rewrite("https://image.wufazhuce.com.evil.com/a.jpg", 800), nil,
+        "相似域名 image.wufazhuce.com.evil.com 不匹配")
+end
+
+----------------------------------------------------------------------
+-- 知乎（zhimg）：JPEG 不重写（_720w 已是缩略图，参数被 CDN 忽略）；
+-- GIF 换后缀 .gif→.jpg 让 CDN 返回首帧静态图（实测 8.6MB → 19.7KB）
+----------------------------------------------------------------------
+do
+    local jpeg = "https://picx.zhimg.com/v2-abc123_720w.jpg?source=8673f162"
+    eq(imgurl.rewrite(jpeg, 800), nil,
+        "知乎 JPEG：不重写（返回 nil，调用方下原图）")
+    eq(imgurl.rewrite("https://pica.zhimg.com/v2-def_720w.gif", 800),
+        "https://pica.zhimg.com/v2-def_720w.jpg",
+        "知乎 GIF：后缀改 .jpg → 首帧静态图（且丢掉 ?source= 追踪参数）")
+    eq(imgurl.rewrite("https://pic1.zhimg.com/v2-ghi.gif?source=x#f", 800),
+        "https://pic1.zhimg.com/v2-ghi.jpg",
+        "知乎 GIF：无 _720w 后缀、带查询串与 fragment 也能改写")
+    eq(imgurl.rewrite("https://picx.zhimg.com/v2-abc.png", 800), nil,
+        "知乎 PNG：不重写（后缀替换只针对 GIF）")
+    eq(imgurl.referer("https://picx.zhimg.com/v2-abc_720w.jpg"), "https://news-at.zhihu.com/",
+        "知乎图片仍需 Referer（未变）")
+end
+
+----------------------------------------------------------------------
+-- 灰度：七牛系走 imageMogr2 colorspace/Gray（返回 1 分量真灰度 JPEG）；
+-- IT之家无灰度配方（BCE 实测 400 InvalidArgument）→ 回退彩色/转 JPEG 配方
+----------------------------------------------------------------------
+do
+    local huxiu = "https://img.huxiucdn.com/article/content/26-09-28/a.png"
+    eq(imgurl.rewrite(huxiu, 800, { gray = true }),
+        huxiu .. "?imageMogr2/thumbnail/800x>/format/jpg/quality/75/colorspace/Gray",
+        "虎嗅 PNG + 灰度：改用 imageMogr2 灰度配方（thumbnail/<w>x> 只缩不放）")
+    eq(imgurl.rewrite("https://s3.ifanr.com/a/b.jpg", 480, { gray = true }),
+        "https://s3.ifanr.com/a/b.jpg"
+            .. "?imageMogr2/thumbnail/480x>/format/jpg/quality/75/colorspace/Gray",
+        "爱范儿 JPEG + 灰度：宽度随参数变化")
+    eq(imgurl.rewrite("https://img.ithome.com/a/b.jpg", 800, { gray = true }),
+        "https://img.ithome.com/a/b.jpg" .. recipe(800),
+        "IT之家无灰度配方：回退彩色配方而不是返回 nil")
+    eq(imgurl.rewrite("https://img.ithome.com/a/b.png", 800, { gray = true }),
+        "https://img.ithome.com/a/b.png" .. recipe(800) .. "/format,f_jpg",
+        "IT之家 PNG + 灰度：回退转 JPEG 配方（仍是体积最省的可用组合）")
+    eq(imgurl.rewrite("https://mmbiz.qpic.cn/a/b/0", 800, { gray = true }), nil,
+        "不可重写的图床开灰度同样返回 nil（调用方回退原图）")
+    eq(imgurl.rewrite(huxiu, 800), huxiu .. "?imageView2/2/w/800/format/jpg/quality/75",
+        "未开灰度时虎嗅 PNG 仍走彩色转 JPEG 配方")
+end
+
+----------------------------------------------------------------------
+-- source_ext：源后缀判定（决定是否转 JPEG）
+----------------------------------------------------------------------
+do
+    eq(imgurl.source_ext("https://a.com/x.PNG"), "png", "大写后缀归一为小写")
+    eq(imgurl.source_ext("https://a.com/x.jpeg?q=1#f"), "jpg", "jpeg 归一为 jpg，且忽略查询串与 fragment")
+    eq(imgurl.source_ext("https://a.com/x.gif"), "gif", "gif 识别正确")
+    eq(imgurl.source_ext("https://a.com/noext"), nil, "无后缀返回 nil")
+    eq(imgurl.source_ext(nil), nil, "nil 返回 nil")
 end
 
 ----------------------------------------------------------------------

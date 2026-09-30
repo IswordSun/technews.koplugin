@@ -277,7 +277,11 @@ do
     ok(pos(snapshot_epub, "cover-image") == nil, "快照模式：无 cover-image 清单项与 meta")
     contains(snapshot_epub, '<itemref idref="ch1"/>', "快照模式：spine 首项即正文（ch1）")
     contains(snapshot_epub, "收藏正文", "快照模式：正文内容仍在")
-    contains(snapshot_epub, "OEBPS/images/img-001.jpg", "快照模式：正文图片照常注入")
+    contains(snapshot_epub,
+        '<item id="img-1" href="images/img-001.jpg" media-type="image/jpeg"/>',
+        "快照模式：正文图片进 manifest")
+    contains(snapshot_epub, '<img src="../images/img-001.jpg" alt=""/>',
+        "快照模式：正文确实引用该图")
     contains(snapshot_epub, '<li><a href="text/article-001.xhtml">【Solidot】某篇收藏文章</a></li>',
         "快照模式：nav 仅列文章本身（带来源标记）")
     ok(pos(snapshot_epub, "本期目录") == nil, "快照模式：无「本期目录」条目")
@@ -314,7 +318,7 @@ local digest = {
     },
 }
 
-local digest_epub = build_and_read(digest)
+local digest_epub, digest_epub_path = build_and_read(digest)
 
 do
     contains(digest_epub, '<h3 id="h1">曝 A 量产良率仅六成</h3>', "小标题正文带锚点（h1）")
@@ -337,6 +341,111 @@ do
     ok(pos(digest_epub, "article-002.xhtml#") == nil, "单标题文章无任何锚点目录项")
     contains(digest_epub, "<h3>小节甲</h3>", "非聚合长文：小标题不带锚点（与从前一致）")
     ok(pos(digest_epub, "article-003.xhtml#") == nil, "非聚合长文：目录无子条目")
+end
+
+----------------------------------------------------------------------
+-- EPUB3 合规：正文图片必须进 manifest、dcterms:modified、唯一 identifier、
+-- NCX playOrder 在文档流中递增（父节点先编号）
+----------------------------------------------------------------------
+
+do
+    -- 两张图（no_cover 避免封面复用干扰编号）：逐张登记且 media-type 按后缀给
+    local two_images = build_and_read({
+        title = "两图期", date = "2026-09-28", identifier = "zhifou-test-two",
+        no_cover = true,
+        items = { { title = "两图", blocks = {
+            { img = "https://example.com/a.jpg" },
+            { text = "中间文字。" },
+            { img = "https://example.com/b.png" },
+        } } },
+        images = {
+            ["https://example.com/a.jpg"] = { data = "JPEGDATA!!", ext = "jpg" },
+            ["https://example.com/b.png"] = { data = "PNGDATA!!!", ext = "png" },
+        },
+    })
+    local declared = 0
+    for _ in two_images:gmatch('<item id="img%-%d+"') do declared = declared + 1 end
+    eq(declared, 2, "manifest：正文图片逐张登记（两张图两个清单项）")
+    contains(two_images, '<item id="img-1" href="images/img-001.jpg" media-type="image/jpeg"/>',
+        "manifest：JPEG 项带正确 href 与 media-type")
+    contains(two_images, '<item id="img-2" href="images/img-002.png" media-type="image/png"/>',
+        "manifest：PNG 项带正确 media-type")
+    contains(two_images, '<img src="../images/img-002.png" alt=""/>',
+        "manifest：正文引用与清单项一致")
+
+    -- dcterms:modified 是 EPUB 3.0 必填项，且必须是 UTC 的 ISO8601
+    local modified = merged_epub:match('<meta property="dcterms:modified">([^<]+)</meta>')
+    ok(modified ~= nil, "metadata：含 dcterms:modified（EPUB 3 必填）")
+    ok(modified and modified:match("^%d%d%d%d%-%d%d%-%d%dT%d%d:%d%d:%d%dZ$") ~= nil,
+        "metadata：dcterms:modified 为 UTC ISO8601 格式", tostring(modified))
+    contains(merged_epub, 'prefix="dcterms: http://purl.org/dc/terms/"',
+        "package：声明 dcterms 前缀")
+
+    -- unique-identifier 必须逐期不同：同一天的不同期不能共用
+    local first = build_and_read({
+        title = "甲期", date = "2026-09-28", identifier = "zhifou-merged-2026-09-28",
+        items = { { title = "一篇", blocks = { { text = "正文。" } } } },
+    })
+    local second = build_and_read({
+        title = "乙期", date = "2026-09-28", identifier = "zhifou-ithome-2026-09-28",
+        items = { { title = "一篇", blocks = { { text = "正文。" } } } },
+    })
+    contains(first, '<dc:identifier id="bookid">zhifou-merged-2026-09-28</dc:identifier>',
+        "identifier：采用调用方传入的值")
+    ok(pos(first, 'id="bookid">zhifou-ithome') == nil and pos(second, 'id="bookid">zhifou-ithome') ~= nil,
+        "identifier：同一天的两期互不相同")
+    -- 未传 identifier 时回退为「日期 + 构建时刻」，不再是同日共用一个
+    local fallback = build_and_read({
+        title = "丙期", date = "2026-09-28",
+        items = { { title = "一篇", blocks = { { text = "正文。" } } } },
+    })
+    ok(fallback:match('<dc:identifier id="bookid">zhifou%-2026%-09%-28%-%d+</dc:identifier>') ~= nil,
+        "identifier：缺省时回退为日期 + 时间戳")
+
+    -- XML 非法控制字符：源站偶发带进正文，不剥离会让整篇成为非法 XML
+    local dirty, dirty_path = build_and_read({
+        title = "控制字符期", date = "2026-09-28", identifier = "zhifou-test-ctrl",
+        items = { { title = "标题\1带控制字符", blocks = {
+            { text = "正文\2里有\1控制字符。\11\12" },
+        } } },
+    })
+    contains(dirty, "正文里有控制字符。",
+        "escape：控制字符被剥掉且正文其余内容不变（原串为 正文\\2里有\\1控制字符。）")
+    if run_ok("command -v unzip >/dev/null 2>&1") then
+        -- 整包是 ZIP（含二进制头），只能按字节搜会误命中；解出章节再查
+        local pipe = io.popen("unzip -p '" .. dirty_path .. "' OEBPS/text/article-001.xhtml")
+        local chapter = pipe and pipe:read("*a") or ""
+        if pipe then pipe:close() end
+        ok(chapter:find("\1", 1, true) == nil and chapter:find("\2", 1, true) == nil
+            and chapter:find("\11", 1, true) == nil,
+            "escape：解出的章节里不含 XML 非法控制字符")
+    end
+
+    if run_ok("command -v xmllint >/dev/null 2>&1") then
+        ok(run_ok("unzip -p '" .. dirty_path
+            .. "' OEBPS/text/article-001.xhtml | xmllint --noout - >/dev/null 2>&1"),
+            "xmllint：剥掉控制字符后的章节是合法 XML")
+        ok(run_ok("unzip -p '" .. merged_path
+            .. "' OEBPS/content.opf | xmllint --noout - >/dev/null 2>&1"),
+            "xmllint：content.opf 合法")
+        ok(run_ok("unzip -p '" .. digest_epub_path
+            .. "' OEBPS/toc.ncx | xmllint --noout - >/dev/null 2>&1"),
+            "xmllint：toc.ncx 合法")
+    else
+        print("     # skip - 环境中没有 xmllint")
+    end
+
+    -- NCX playOrder：父节点先编号 → 文档流中严格递增（此前父 nav-4 内含 nav-2/nav-3）
+    local orders = {}
+    for value in digest_epub:gmatch('playOrder="(%d+)"') do
+        orders[#orders + 1] = tonumber(value)
+    end
+    local monotonic = #orders > 0
+    for i = 2, #orders do
+        if orders[i] <= orders[i - 1] then monotonic = false end
+    end
+    ok(monotonic, "ncx：playOrder 在文档流中严格递增（父节点先于子节点）",
+        table.concat(orders, ","))
 end
 
 ----------------------------------------------------------------------
@@ -373,10 +482,47 @@ local no_coverpage_epub = build_and_read(no_coverpage)
 do
     ok(pos(no_coverpage_epub, "coverpage.xhtml") == nil, "普通期：无封面图片页")
     ok(pos(no_coverpage_epub, '<itemref idref="coverpage"/>') == nil, "普通期：spine 无封面页引用")
-    contains(no_coverpage_epub, "images/cover.jpg", "普通期：保留元数据封面图（书架缩略图）")
+    -- 封面取自正文首图：字节相同就不再存第二份文件，只在 manifest 里标记为封面
+    contains(no_coverpage_epub,
+        '<item id="cover-image" href="images/img-001.jpg" media-type="image/jpeg" properties="cover-image"/>',
+        "普通期：封面复用正文首图（manifest 标记 properties=cover-image）")
+    ok(pos(no_coverpage_epub, "images/cover.jpg") == nil,
+        "普通期：封面与正文首图同字节 → 不写第二份文件（每期省一张最大图）")
     contains(no_coverpage_epub, '<meta name="cover" content="cover-image"/>', "普通期：保留 meta cover")
     contains(no_coverpage_epub, '<spine toc="ncx"><itemref idref="ch1"/>',
         "普通期：spine 首项即目录页（ch1）")
+end
+
+----------------------------------------------------------------------
+-- is_complete：写盘完整性判定（缓存命中前用；截断的 EPUB 不能算命中）
+----------------------------------------------------------------------
+
+do
+    local _, built = build_and_read({
+        title = "完整期",
+        date = "2026-09-28",
+        items = { { title = "一篇", blocks = { { text = "正文。" } } } },
+    })
+    ok(Epub.is_complete(built), "is_complete：正常构建的 EPUB 判定为完整")
+    ok(not Epub.is_complete(built .. ".not-exist"), "is_complete：文件不存在 → false")
+
+    -- 模拟写盘中断：保留开头，砍掉结尾的 EOCD
+    local file = assert(io.open(built, "rb"))
+    local content = file:read("*a")
+    file:close()
+    local truncated = built .. ".truncated"
+    temp_files[#temp_files + 1] = truncated
+    local out = assert(io.open(truncated, "wb"))
+    out:write(content:sub(1, #content - 30))
+    out:close()
+    ok(not Epub.is_complete(truncated), "is_complete：截断的 EPUB → false")
+
+    local tiny = built .. ".tiny"
+    temp_files[#temp_files + 1] = tiny
+    out = assert(io.open(tiny, "wb"))
+    out:write("PK")
+    out:close()
+    ok(not Epub.is_complete(tiny), "is_complete：过短的残片 → false")
 end
 
 cleanup()

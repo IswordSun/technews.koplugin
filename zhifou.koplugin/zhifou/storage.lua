@@ -6,6 +6,7 @@
 local DataStorage = require("datastorage")
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
+local epub = require("zhifou.epub")
 
 local storage = {}
 
@@ -44,8 +45,18 @@ function storage:epub_path(source_id, date)
     return self.dir .. source_id .. "-" .. date .. ".epub"
 end
 
+--- 缓存期文件是否存在**且内容完整**（缓存命中的唯一判定）。
+-- 只判 mode=="file" 是不够的：写盘中断（磁盘满/断电）会留下截断的 EPUB，
+-- 当成命中直接打开会报 unsupported or invalid document，且永远不会重抓。
 function storage:epub_exists(source_id, date)
-    return lfs.attributes(self:epub_path(source_id, date), "mode") == "file"
+    local path = self:epub_path(source_id, date)
+    if lfs.attributes(path, "mode") ~= "file" then return false end
+    if not epub.is_complete(path) then
+        -- 不删：留给「缓存清理」可见可删；这里只当作未命中，触发重新抓取
+        logger.warn("zhifou cache epub incomplete, refetch:", path)
+        return false
+    end
+    return true
 end
 
 -- 前置声明（定义见文件末尾，remove_issue/clear_* 也要用）
@@ -74,10 +85,15 @@ function storage:list_issues()
     end
     table.sort(entries, function(a, b)
         if a.date ~= b.date then return a.date > b.date end
-        if a.id == "merged" or b.id == "merged" then
-            return a.id == "merged" -- 同一天里合并期在前（更完整）
+        if a.id ~= b.id then
+            -- 同一天里合并期在前（更完整）
+            if a.id == "merged" then return true end
+            if b.id == "merged" then return false end
+            return a.id < b.id
         end
-        return a.id < b.id
+        -- 兜底：同名不可能（文件名唯一），但必须有确定结果，
+        -- 否则「与自己比较返回 true」会破坏严格弱序，排序结果随机错乱
+        return a.name < b.name
     end)
     return entries
 end
@@ -133,7 +149,10 @@ end
 -- 「抓取往期」的历史期刊文件名带目标日期（如 merged-2026-09-19.epub），按文件名
 -- 判会在落盘瞬间被当成过期删除——实测阅读器打开它时报 unsupported or invalid
 -- document（文件已被清掉）。按 mtime 判既修此问题，又保持"保留最近 7 天抓取"语义。
-function storage:cleanup(retain_days)
+-- @param protect 可选：{ [绝对路径] = true }，命中的文件不删。
+--   用途：KOReader 启动时会先打开上次阅读的文档、之后才构造插件并调用本函数，
+--   若那一期已过保留期，就会把**正在阅读**的 EPUB 连同 .sdr 进度一起删掉。
+function storage:cleanup(retain_days, protect)
     -- 目录不存在时 lfs.dir 迭代会抛错，直接返回
     if lfs.attributes(self.dir, "mode") ~= "directory" then return 0 end
     retain_days = retain_days or 7
@@ -141,10 +160,13 @@ function storage:cleanup(retain_days)
     local names = {}
     for name in lfs.dir(self.dir) do
         if name:sub(-5) == ".epub" then
-            local attr = lfs.attributes(self.dir .. name)
-            local mtime = attr and attr.modification
-            if mtime and mtime < cutoff then
-                names[#names + 1] = name
+            local path = self.dir .. name
+            if not (protect and protect[path]) then
+                local attr = lfs.attributes(path)
+                local mtime = attr and attr.modification
+                if mtime and mtime < cutoff then
+                    names[#names + 1] = name
+                end
             end
         end
     end
@@ -152,7 +174,30 @@ function storage:cleanup(retain_days)
         self:remove_issue(name)
         logger.info("zhifou cleanup removed:", name)
     end
+    self:cleanup_partials()
     return #names
+end
+
+--- 回收残留的 .part（构建中断/断电留下的半成品）。
+-- 它们与整期同尺寸，却不在任何清理路径的扫描范围内（只认 .epub），
+-- 不清就会一直占地方。阈值 1 天：避免误删正在进行中的构建。
+function storage:cleanup_partials(min_age_seconds)
+    if lfs.attributes(self.dir, "mode") ~= "directory" then return 0 end
+    local cutoff = os.time() - (min_age_seconds or 86400)
+    local removed = 0
+    for name in lfs.dir(self.dir) do
+        if name:sub(-5) == ".part" then
+            local path = self.dir .. name
+            local attr = lfs.attributes(path)
+            local mtime = attr and attr.modification
+            if mtime and mtime < cutoff then
+                os.remove(path)
+                removed = removed + 1
+                logger.info("zhifou cleanup removed partial:", name)
+            end
+        end
+    end
+    return removed
 end
 
 return storage

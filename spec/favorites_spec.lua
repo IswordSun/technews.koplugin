@@ -13,12 +13,13 @@ local plugin_dir = spec_dir .. "/../zhifou.koplugin"
 package.preload["datastorage"] = function()
     return { getDataDir = function() return "/tmp/zhifou-favorites-spec" end }
 end
-package.preload["libs/libkoreader-lfs"] = function()
-    return {
-        attributes = function() return nil end,
-        mkdir = function() return false end,
-    }
-end
+-- 受控 lfs 替身：默认什么都不存在（本 spec 的纯逻辑用例不需要文件系统）；
+-- 末尾的「索引损坏」用例会把 attributes 换成真实文件判定，用完还原。
+local stub_lfs = {
+    attributes = function() return nil end,
+    mkdir = function() return false end,
+}
+package.preload["libs/libkoreader-lfs"] = function() return stub_lfs end
 package.preload["logger"] = function()
     return {
         info = function() end, warn = function() end,
@@ -173,6 +174,70 @@ do
     eq(favorites.section_article(item, 0), nil, "section_article：序号 0 返回 nil")
     eq(favorites.section_article(item, 99), nil, "section_article：越界序号返回 nil")
     eq(favorites.section_article(item, nil), nil, "section_article：序号缺失返回 nil")
+end
+
+----------------------------------------------------------------------
+-- 索引损坏保护：不能静默清空历史收藏
+-- （load→save 是全量覆盖，损坏索引若被当成空表读回，下一次收藏就会把
+--  历史条目永久写没——快照文件还在，界面上再也看不到）
+----------------------------------------------------------------------
+
+do
+    local index_path = favorites.index_path
+    local dir = index_path:match("^(.*)/[^/]*$") or "/tmp"
+    os.execute("mkdir -p '" .. dir .. "'")
+
+    local function write_index(text)
+        local file = assert(io.open(index_path, "wb"))
+        file:write(text)
+        file:close()
+    end
+
+    local function file_exists(path)
+        local file = io.open(path, "rb")
+        if not file then return false end
+        file:close()
+        return true
+    end
+
+    local original_attributes = stub_lfs.attributes
+    stub_lfs.attributes = function(path, what)
+        if not file_exists(path) then return nil end
+        if what == "mode" then return "file" end
+        return { mode = "file", modification = os.time() }
+    end
+
+    -- 1) 正常索引：按收藏时间倒序；时间是字符串（旧数据/手改）也不能抛错
+    write_index('return { { title = "旧", favorited_at = "100" },'
+        .. ' { title = "新", favorited_at = 200 } }')
+    local list = favorites.load()
+    eq(#list, 2, "load：正常索引两条都读回")
+    eq(list[1].title, "新", "load：按收藏时间倒序")
+    eq(list[2].title, "旧", "load：字符串时间不抛错（tonumber 保护）")
+
+    -- 2) 损坏索引：原文件先备份，再以空表继续，并留下一次性提示
+    write_index('return { { title = "被截断')
+    favorites._broken_handled, favorites._broken_backup, favorites._notice = nil, nil, nil
+    local empty = favorites.load()
+    eq(#empty, 0, "损坏索引：load 返回空表（不抛错）")
+    ok(favorites._broken_backup ~= nil, "损坏索引：原索引被改名备份")
+    ok(file_exists(favorites._broken_backup), "损坏索引：备份文件确实落盘")
+    ok(not file_exists(index_path), "损坏索引：原路径已让出（不再被覆盖）")
+    ok(favorites.consume_notice() ~= nil, "损坏索引：给出面向用户的一次性提示")
+    eq(favorites.consume_notice(), nil, "损坏索引：提示只出现一次")
+
+    -- 3) 备份失败时：save 必须拒绝写入，宁可这次收藏不落索引
+    favorites._broken_handled, favorites._broken_backup = true, nil
+    local saved, save_err = favorites.save({})
+    eq(saved, nil, "save：索引损坏且未备份时拒绝写入")
+    ok(save_err ~= nil, "save：给出拒绝原因")
+
+    -- 还原替身与模块状态，避免影响其它用例
+    local backup_path = favorites._broken_backup
+    favorites._broken_handled, favorites._broken_backup, favorites._notice = nil, nil, nil
+    stub_lfs.attributes = original_attributes
+    os.remove(index_path)
+    if backup_path then os.remove(backup_path) end
 end
 
 ----------------------------------------------------------------------

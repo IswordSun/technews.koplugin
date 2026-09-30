@@ -147,5 +147,45 @@ do
 end
 
 ----------------------------------------------------------------------
+-- entry_rel_path：发行包条目的解压准入（安全边界）
+-- 背景：KOReader 的 extractToPath 只设 ARCHIVE_EXTRACT_SECURE_NODOTDOT，
+-- 不阻止创建符号链接 → 包内一个链接条目就能让后续条目写到插件目录之外。
+----------------------------------------------------------------------
+
+do
+    local prefixes = { updater.ASSET_PREFIX, updater.LEGACY_ASSET_PREFIX }
+
+    eq(updater.entry_rel_path("zhifou.koplugin/main.lua", "file", prefixes),
+        "main.lua", "entry_rel_path：普通文件剥掉顶层目录")
+    eq(updater.entry_rel_path("zhifou.koplugin/zhifou/epub.lua", "file", prefixes),
+        "zhifou/epub.lua", "entry_rel_path：子目录文件保留相对路径")
+    eq(updater.entry_rel_path("technews.koplugin/main.lua", "file", prefixes),
+        "main.lua", "entry_rel_path：过渡期的旧顶层目录同样接受")
+    -- 目录条目：不带尾斜杠的能落到暂存目录；带尾斜杠的相对路径为空 → 跳过
+    -- （libarchive 解压文件时会自动建父目录，所以跳过目录条目不影响结果）
+    eq(updater.entry_rel_path("zhifou.koplugin/zhifou", "directory", prefixes),
+        "zhifou", "entry_rel_path：目录条目剥掉前缀后可用")
+    local dir_rel, dir_reason = updater.entry_rel_path("zhifou.koplugin/", "directory", prefixes)
+    eq(dir_rel, nil, "entry_rel_path：带尾斜杠的目录条目被跳过")
+    eq(dir_reason, "empty-rel", "entry_rel_path：跳过原因标注为 empty-rel")
+
+    local rel, reason = updater.entry_rel_path("zhifou.koplugin/zhifou", "link", prefixes)
+    eq(rel, nil, "entry_rel_path：符号链接条目被拒（写穿防线）")
+    eq(reason, "non-regular", "entry_rel_path：拒绝原因标注为 non-regular")
+    eq(updater.entry_rel_path("zhifou.koplugin/dev", "other", prefixes), nil,
+        "entry_rel_path：设备节点/未知类型被拒")
+
+    eq(updater.entry_rel_path("zhifou.koplugin/../evil.lua", "file", prefixes), nil,
+        "entry_rel_path：路径穿越被拒")
+    eq(updater.entry_rel_path("other.koplugin/main.lua", "file", prefixes), nil,
+        "entry_rel_path：不在已知顶层目录内被拒")
+    eq(updater.entry_rel_path(nil, "file", prefixes), nil,
+        "entry_rel_path：路径缺失被拒")
+    -- 更老的 KOReader 不提供 mode 字段：按普通文件处理，保持向后兼容
+    eq(updater.entry_rel_path("zhifou.koplugin/main.lua", nil, prefixes),
+        "main.lua", "entry_rel_path：mode 缺失时按文件处理")
+end
+
+----------------------------------------------------------------------
 print(("%d checks, %d failed"):format(checks, failed))
 if failed > 0 then os.exit(1) end

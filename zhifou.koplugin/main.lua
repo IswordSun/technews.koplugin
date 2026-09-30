@@ -27,6 +27,7 @@ local epub = require("zhifou.epub")
 local favorites = require("zhifou.favorites")
 local htmltext = require("zhifou.htmltext")
 local http = require("zhifou.http")
+local images = require("zhifou.images")
 local imgurl = require("zhifou.imgurl")
 local rss = require("zhifou.rss")
 local storage = require("zhifou.storage")
@@ -37,13 +38,13 @@ local window = require("zhifou.window")
 -- 全部可用订阅源（有序）；新增源只需在 sources/registry.lua 追加一行
 local registry = require("zhifou.sources.registry")
 
--- 每期图片总量上限（安全阀：控制抓取时间与 EPUB 体积；每条默认取全部图片）
+-- 每期图片张数上限（安全阀：控制抓取时间；字节上限在 zhifou/images.lua）
 local MAX_IMAGES_PER_ISSUE = 150
 
 local TechNews = WidgetContainer:extend{
     name = "zhifou",
     is_doc_only = false,
-    version = "0.1.13",
+    version = "0.1.14",
 }
 
 -- 自测只执行一次：插件用 dofile 加载，模块级变量会随 UI 重建被重置，
@@ -134,19 +135,8 @@ local function issue_label(entry)
     return string.format("%s · %s月%s日", label, tonumber(m), tonumber(d))
 end
 
--- 从 URL 推断图片扩展名
-local function image_ext(url)
-    local path = url:match("^[^?]+") or url
-    local ext = path:match("%.([%a%d]+)$")
-    if ext then
-        ext = ext:lower()
-        if ext == "jpeg" then ext = "jpg" end
-        if ext == "jpg" or ext == "png" or ext == "gif" or ext == "webp" then
-            return ext
-        end
-    end
-    return "jpg"
-end
+-- 图片扩展名不再从 URL 推断：CDN 会换格式（PNG 源返回 JPEG），
+-- 一律以响应字节的魔数为准，见 zhifou/images.lua 的 ext_from_data
 
 -- 下载图片：按图床决定是否附带 Referer
 -- （少数派 cdnfile.sspai.com 不带 Referer 会 403；其余图床不带，见 imgurl.referer）
@@ -167,7 +157,11 @@ function TechNews:init()
         end
     end
     storage:init()
-    storage:cleanup(7)   -- 保留最近 7 期
+    -- 保留最近 7 期；正在阅读的那一期必须豁免
+    -- （KOReader 先打开上次的文档、后构造插件 → 过期的那期会连 .sdr 进度一起被删）
+    local opened = self.ui and self.ui.document and self.ui.document.file
+    local protect = opened and { [opened] = true } or nil
+    storage:cleanup(7, protect)
     -- 上次在线更新若留下回滚副本，能走到这里说明新版本可用，清掉备份
     pcall(updater.cleanup_backup)
     self.ui.menu:registerToMainMenu(self)
@@ -240,6 +234,12 @@ function TechNews:withImages()
     return G_reader_settings:readSetting("zhifou_with_images") ~= false
 end
 
+--- 图片是否转灰度（默认开：墨水屏上彩色没有意义，灰度 JPEG 更小；
+-- 支持的图床见 imgurl 的 gray_recipe，不支持的自动作罢）
+function TechNews:withGrayImages()
+    return G_reader_settings:readSetting("zhifou_gray_images") ~= false
+end
+
 --- 订阅源设置（nil = 用户尚未选择，按各源 default_enabled 默认启用）
 function TechNews:sourceSetting()
     return G_reader_settings:readSetting("zhifou_sources")
@@ -281,6 +281,17 @@ function TechNews:openHome()
                 text = "首次使用：请到「设置 → 订阅源设置」中选择要订阅的源。\n\n"
                     .. "默认启用：IT之家、雷锋网、知乎日报、「一个」。",
                 timeout = 6,
+            })
+        end)
+    end
+
+    -- 收藏索引曾损坏：一次性告知（快照没丢，但用户必须知道列表为什么空了）
+    local index_notice = favorites.consume_notice()
+    if index_notice then
+        UIManager:scheduleIn(0.2, function()
+            UIManager:show(InfoMessage:new{
+                text = index_notice,
+                timeout = 10,
             })
         end)
     end
@@ -547,6 +558,18 @@ function TechNews:getSettingItems()
             G_reader_settings:saveSetting("zhifou_with_images",
                 not self:withImages())
             -- 切换后当天缓存作废，下次打开重新生成
+            storage:clear_date(today_str())
+        end,
+    }
+    items[#items + 1] = {
+        text = "图片转灰度（省体积）",
+        keep_menu_open = true,
+        text_func = function()
+            return (self:withGrayImages() and "☑ " or "☐ ") .. "图片转灰度（省体积）"
+        end,
+        callback = function()
+            G_reader_settings:saveSetting("zhifou_gray_images",
+                not self:withGrayImages())
             storage:clear_date(today_str())
         end,
     }
@@ -1051,6 +1074,11 @@ function TechNews:fetchSource(source, limit, progress, range)
             progress.source_index, progress.source_count)
     end
     local max_items = limit or source.max_items
+    -- 首个网络请求之前先出进度：feed/API 请求带重试（单源最坏 4×30s），
+    -- 此前这一整段没有任何提示与取消点，用户看到的是「点了没反应」。
+    if not Trapper:info(string.format("%s正在连接 %s…（点击可取消）", prefix, source.name)) then
+        return nil, "已取消"
+    end
     local result, err
     if source.fetch then
         -- 自定义抓取源（如知乎日报 API）：适配器按时间范围直接产出条目（含内容块）
@@ -1071,8 +1099,9 @@ function TechNews:fetchSource(source, limit, progress, range)
         item.source_name = source.name
     end
 
-    -- 2) 下载图片（可关闭；按整期总量设上限，单条不限）
-    local images = {}
+    -- 2) 下载图片（可关闭；张数上限 + 字节额度，见 zhifou/images.lua）
+    local downloaded = {}
+    local image_skips = 0
     if self:withImages() then
         local pending = {}
         local seen = {}
@@ -1084,10 +1113,13 @@ function TechNews:fetchSource(source, limit, progress, range)
                 end
             end
         end
-        -- 合并模式下由调用方传入剩余额度，单源时用整期上限
+        -- 合并模式下由调用方传入剩余张数额度，单源时用整期上限
         local cap = (progress and progress.image_budget) or MAX_IMAGES_PER_ISSUE
         if cap < 0 then cap = 0 end
         local total = math.min(#pending, cap)
+        -- 字节额度：合并期跨源共享（调用方传入同一个 budget 才生效）
+        local budget = (progress and progress.image_bytes_budget) or images.new_budget()
+        local gray = self:withGrayImages()
         for i = 1, total do
             local url = pending[i].url
             local msg = string.format("%s下载图片 %d/%d…（点击可取消）",
@@ -1095,39 +1127,50 @@ function TechNews:fetchSource(source, limit, progress, range)
             if not Trapper:info(msg) then
                 return nil, "已取消"
             end
-            -- IT之家图片让 BCE CDN 缩放（宽 800）；原 URL 自带的
-            -- x-bce-process 必须被替换而非追加，否则 CDN 忽略新参数返回原图
-            local target = imgurl.rewrite(url, 800) or url
-            local data, img_err = download_image(target)
-            -- 超高图缩到 800 宽会超出 CDN 边长上限（HTTP 400），降级 480 重试
-            if not data and img_err and img_err:find("HTTP 400", 1, true) then
-                local fallback = imgurl.rewrite(url, 480)
-                if fallback then data = download_image(fallback) end
-            end
-            if data and #data > 0 then
-                images[url] = { data = data, ext = image_ext(url) }
+            -- 重写（含灰度/转 JPEG）→ 下载 → 魔数判型 → 额度判定，全在 images.fetch 里
+            local image, img_err = images.fetch(url, {
+                download = download_image,
+                rewrite = imgurl.rewrite,
+                budget = budget,
+                gray = gray,
+            })
+            if image then
+                downloaded[url] = image
+            elseif img_err == "over_budget" then
+                -- 整期字节额度用尽：后面的图不再下载（张数与体积都要有闸门）
+                logger.info("zhifou image budget exhausted:", source.id,
+                    "at", tostring(i), "of", tostring(total))
+                break
             end
         end
+        local summary = budget:summary()
+        image_skips = summary.skipped
         logger.info("zhifou images:",
             source.id,
             "pending=" .. tostring(#pending),
-            "downloaded=" .. tostring(total),
-            "cap=" .. tostring(cap))
+            "downloaded=" .. tostring(summary.images),
+            "cap=" .. tostring(cap),
+            "bytes=" .. tostring(summary.bytes),
+            "skipped=" .. tostring(summary.skipped))
     end
 
-    return { items = result, images = images }
+    -- 字节额度对象要跨源复用：合并期由调用方持有并传回下一源
+    return { items = result, images = downloaded, image_skips = image_skips }
 end
 
 --- 生成 EPUB 并打开
-function TechNews:buildAndOpen(issue_id, title, date, items, images)
+-- @param warnings 可选：本期缺漏提示（合并期里有源抓取失败时的源名列表）
+function TechNews:buildAndOpen(issue_id, title, date, items, image_map, warnings)
     local path = storage:epub_path(issue_id, date)
     logger.info("zhifou building issue:",
         issue_id, date, tostring(#items) .. " items", path)
     local ok, err = pcall(epub.build, {
         title = title,
         date = date,
+        -- 唯一标识带上 issue_id：同一天的合并期与各单源期不能共用同一个 identifier
+        identifier = "zhifou-" .. issue_id .. "-" .. date,
         items = items,
-        images = images or {},
+        images = image_map or {},
     }, path)
     if not ok then
         logger.warn("zhifou epub build failed:", tostring(err))
@@ -1144,12 +1187,18 @@ function TechNews:buildAndOpen(issue_id, title, date, items, images)
     favorites.write_sidecar(path, title, date, items)
     -- 抓取与构建全部完成：弹一条含条数/图片数的完成提示（2 秒自动消失）
     local image_count = 0
-    for _ in pairs(images or {}) do
+    for _ in pairs(image_map or {}) do
         image_count = image_count + 1
     end
+    local text = string.format("下载完成 · %d 条资讯 · %d 张图片", #items, image_count)
+    -- 有源抓取失败时必须说明：否则用户会以为「今天这些源没更新」
+    -- （此前只写 logger，界面上完全看不出来）
+    if warnings and #warnings > 0 then
+        text = text .. "\n本期未取到：" .. table.concat(warnings, "、")
+    end
     UIManager:show(InfoMessage:new{
-        text = string.format("下载完成 · %d 条资讯 · %d 张图片", #items, image_count),
-        timeout = 2,
+        text = text,
+        timeout = warnings and #warnings > 0 and 5 or 2,
     })
     UIManager:scheduleIn(0.1, function()
         self:openEpub(path)
@@ -1289,7 +1338,7 @@ function TechNews:doFavorite(article, issue_path)
         Trapper:info("收藏中…（点击可取消）")
         local added, err = favorites.add(article, issue_path, function(text)
             return Trapper:info(text)
-        end)
+        end, self:withGrayImages())
         Trapper:clear()
         if added then
             UIManager:show(InfoMessage:new{
@@ -1433,7 +1482,11 @@ function TechNews:openIssueRange(source, kind, date)
             return
         end
         local title = string.format("%s · %s", source.name, range.title)
-        self:buildAndOpen(issue_id, title, range.date, bundle.items, bundle.images)
+        local warnings = {}
+        if (bundle.image_skips or 0) > 0 then
+            warnings[#warnings + 1] = string.format("%d 张图过大已略过", bundle.image_skips)
+        end
+        self:buildAndOpen(issue_id, title, range.date, bundle.items, bundle.images, warnings)
         -- 结束立即收起进度消息（Trapper 不会自动关闭，需显式 clear；KOReader 惯例）
         Trapper:clear()
     end)
@@ -1490,15 +1543,20 @@ function TechNews:fetchAndOpenMerged(issue_id, date, range)
         local all_images = {}
         local failed = {}
         local image_budget = MAX_IMAGES_PER_ISSUE
+        -- 字节额度跨源共享：否则每个源各留 12MB，整期仍可能到几十 MB
+        local bytes_budget = images.new_budget()
+        local image_skips = 0
         for i, source in ipairs(sources) do
             local bundle, err = self:fetchSource(source, source.merge_max_items,
                 { source_index = i, source_count = #sources,
-                  image_budget = image_budget }, range)
+                  image_budget = image_budget,
+                  image_bytes_budget = bytes_budget }, range)
             if bundle then
                 -- 合并期图片上限跨源共享：按实际下载数扣减剩余额度
                 local used = 0
                 for _ in pairs(bundle.images) do used = used + 1 end
                 image_budget = math.max(image_budget - used, 0)
+                image_skips = image_skips + (bundle.image_skips or 0)
                 for _, item in ipairs(bundle.items) do
                     all[#all + 1] = item
                 end
@@ -1514,14 +1572,21 @@ function TechNews:fetchAndOpenMerged(issue_id, date, range)
                 end
                 logger.warn("zhifou merge source failed:",
                     source.id, tostring(err))
-                failed[#failed + 1] = source.name
+                failed[#failed + 1] = { name = source.name, err = tostring(err) }
             end
         end
         if #all == 0 then
             Trapper:clear()
-            self:showFetchError(
-                (range and range.empty)
-                    or (table.concat(failed, "、") .. " 均不可用"),
+            -- 全军覆没时把每个源的原因一并说清（断网 / 被墙 / 改版 是三种不同的处置）
+            local reason = range and range.empty
+            if not reason then
+                local parts = {}
+                for _, fail in ipairs(failed) do
+                    parts[#parts + 1] = fail.name .. "（" .. fail.err .. "）"
+                end
+                reason = table.concat(parts, "、") .. " 均不可用"
+            end
+            self:showFetchError(reason,
                 function() self:fetchAndOpenMerged(issue_id, date, range) end)
             return
         end
@@ -1548,7 +1613,15 @@ function TechNews:fetchAndOpenMerged(issue_id, date, range)
                 ("%.2f"):format(pair.similarity))
         end
         local title = "知否 · " .. (range and range.title or date)
-        self:buildAndOpen(issue_id, title, date, kept, all_images)
+        local warnings = {}
+        for _, fail in ipairs(failed) do
+            warnings[#warnings + 1] = fail.name
+        end
+        -- 有图被略过也要说一声（否则用户只看到图片数变少，不知道是体积闸门）
+        if image_skips > 0 then
+            warnings[#warnings + 1] = string.format("%d 张图过大已略过", image_skips)
+        end
+        self:buildAndOpen(issue_id, title, date, kept, all_images, warnings)
         Trapper:clear()
     end)
 end

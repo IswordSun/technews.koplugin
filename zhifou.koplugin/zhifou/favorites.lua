@@ -15,6 +15,7 @@ local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
 local epub = require("zhifou.epub")
 local http = require("zhifou.http")
+local images = require("zhifou.images")
 local imgurl = require("zhifou.imgurl")
 local storage = require("zhifou.storage")
 local zipread = require("zhifou.zipread")
@@ -81,40 +82,70 @@ local function unique_path(path)
     return path
 end
 
--- 从 URL 推断图片扩展名（与 main.lua 的 image_ext 同规则）
-local function image_ext(url)
-    local path = url:match("^[^?]+") or url
-    local ext = path:match("%.([%a%d]+)$")
-    if ext then
-        ext = ext:lower()
-        if ext == "jpeg" then ext = "jpg" end
-        if ext == "jpg" or ext == "png" or ext == "gif" or ext == "webp" then
-            return ext
-        end
-    end
-    return "jpg"
-end
+-- 图片扩展名不再从 URL 推断：CDN 会换格式（PNG 源返回 JPEG），
+-- 一律以响应字节的魔数为准（zhifou/images.lua 的 ext_from_data）
 
---- 读取索引，按收藏时间倒序；文件缺失/损坏时返回空数组
+--- 读取索引，按收藏时间倒序；文件缺失/损坏时返回空数组。
+-- 损坏（文件在但解析失败）**不会**静默清空：先把原索引改名备份为
+-- favorites.lua.broken-<时间戳>，再返回空表；否则下一次收藏/删除会以空表为基准
+-- 全量覆盖写回，历史收藏就此从索引里永久消失（快照文件还在，界面再也看不到）。
 function favorites.load()
     local list = {}
-    local chunk = loadfile(favorites.index_path)
+    local chunk, load_err = loadfile(favorites.index_path)
     if chunk then
         local ok, data = pcall(chunk)
         if ok and type(data) == "table" then
+            local dropped = 0
             for _, entry in ipairs(data) do
                 if type(entry) == "table" and entry.title then
                     list[#list + 1] = entry
+                else
+                    dropped = dropped + 1
                 end
             end
+            if dropped > 0 then
+                logger.warn("zhifou favorites index dropped entries without title:", dropped)
+            end
         else
-            logger.warn("zhifou favorites index unreadable:", tostring(data))
+            favorites.preserve_broken_index(tostring(data))
         end
+    elseif lfs.attributes(favorites.index_path, "mode") == "file" then
+        -- 文件在但 loadfile 失败（截断/语法损坏）与「文件不存在」必须区分开
+        favorites.preserve_broken_index(tostring(load_err))
     end
     table.sort(list, function(a, b)
-        return (a.favorited_at or 0) > (b.favorited_at or 0)
+        return (tonumber(a.favorited_at) or 0) > (tonumber(b.favorited_at) or 0)
     end)
     return list
+end
+
+--- 备份损坏的索引文件，并记下给用户看的一次性提示。
+-- @return 备份后的路径，失败返回 nil（此时 save 会拒绝写入，避免覆盖唯一的副本）
+function favorites.preserve_broken_index(reason)
+    if favorites._broken_handled then return favorites._broken_backup end
+    favorites._broken_handled = true
+    if lfs.attributes(favorites.index_path, "mode") ~= "file" then return nil end
+    local backup = favorites.index_path .. ".broken-"
+        .. os.date("%Y%m%d-%H%M%S")
+    local renamed = os.rename(favorites.index_path, backup)
+    if renamed then
+        favorites._broken_backup = backup
+        logger.warn("zhifou favorites index corrupt, backed up to:", backup, reason)
+        favorites._notice = "收藏索引损坏，已备份为 " .. backup
+            .. "\n快照文件仍在 favorites/ 目录，收藏列表已重新开始记录。"
+    else
+        -- 连备份都失败：拒绝后续写入，宁可这次收藏不落索引，也不覆盖唯一副本
+        logger.warn("zhifou favorites index corrupt and backup failed:", reason)
+        favorites._notice = "收藏索引损坏且无法备份，已暂停写入以免覆盖原索引（详见日志）。"
+    end
+    return favorites._broken_backup
+end
+
+--- 取出一次性提示（读过即清），供首页在打开时告知用户
+function favorites.consume_notice()
+    local notice = favorites._notice
+    favorites._notice = nil
+    return notice
 end
 
 --- 精确标题匹配（收藏定位与判重的唯一依据）；未命中返回 nil
@@ -205,6 +236,11 @@ end
 
 --- 覆盖写入索引（dump 序列化的 Lua 表，可直接 loadfile 读回）
 function favorites.save(list)
+    -- 索引曾损坏且备份失败：拒绝写入，否则会把唯一可抢救的副本覆盖成新表
+    -- （此判定必须先于建目录：数据安全优先于「把目录建好」）
+    if favorites._broken_handled and not favorites._broken_backup then
+        return nil, "收藏索引损坏且未能备份，已暂停写入以免覆盖原索引"
+    end
     if not ensure_dirs() then return nil, "无法创建收藏目录" end
     -- 原子写：先写 .part 再 rename，写一半崩溃不会损坏原索引
     local tmp_path = favorites.index_path .. ".part"
@@ -212,10 +248,13 @@ function favorites.save(list)
     if not file then return nil, err end
     -- dump 产物是表达式，须前置 return 才是合法 Lua chunk（loadfile 要求语句）
     local ok, write_err = file:write("return ", dump(list))
-    file:close()
-    if not ok then
+    -- 收尾同样要检查：stdio 有缓冲，磁盘满只在 flush/close 暴露，
+    -- 否则截断的索引会被改名成正式索引，等于把历史收藏写没了
+    local flushed, flush_err = file:flush()
+    local closed, close_err = file:close()
+    if not ok or not flushed or not closed then
         os.remove(tmp_path)
-        return nil, write_err
+        return nil, write_err or flush_err or close_err
     end
     local renamed, rename_err = os.rename(tmp_path, favorites.index_path)
     if not renamed then
@@ -245,8 +284,18 @@ function favorites.write_sidecar(epub_path, title, date, items)
         local file, open_err = io.open(epub_path .. ".items.lua", "wb")
         if not file then error(open_err) end
         -- 同索引：dump 是表达式，前置 return 后 loadfile 才能执行
-        file:write("return ", dump({ title = title, date = date, items = slim }))
-        file:close()
+        local wrote, write_err = file:write("return ",
+            dump({ title = title, date = date, items = slim }))
+        if not wrote then
+            file:close()
+            error(write_err)
+        end
+        -- sidecar 截断会让「收藏当前文章」定位不到条目，同样要检查落盘
+        local flushed, flush_err = file:flush()
+        local closed, close_err = file:close()
+        if not flushed or not closed then
+            error(flush_err or close_err)
+        end
     end)
     if not ok then
         logger.warn("zhifou sidecar write failed:", tostring(err))
@@ -296,7 +345,7 @@ local function extract_images_from_issue(article, issue_path)
 
     local reader = zipread.open(issue_path)
     if not reader then return nil end
-    local ok, images = pcall(function()
+    local ok, image_map = pcall(function()
         -- 章节文件名与 sidecar 序号一一对应（epub.lua 用 article-%03d.xhtml）
         local chapter = reader:extract(
             string.format("OEBPS/text/article-%03d.xhtml", index))
@@ -313,29 +362,32 @@ local function extract_images_from_issue(article, issue_path)
         -- 构建期会跳过没有数据的图片块（当次未下载/超出上限），数量不符说明
         -- 本章图片不完整，必须回退下载补齐（正文与其余图片最终仍齐全）
         if #names ~= #urls then return nil end
-        local images = {}
+        local image_map = {}
         for i, url in ipairs(urls) do
             local data = reader:extract("OEBPS/images/" .. names[i])
             if not data then return nil end
             local ext = names[i]:match("%.([%a%d]+)$") or "jpg"
-            images[url] = { data = data, ext = ext:lower() }
+            image_map[url] = { data = data, ext = ext:lower() }
         end
-        return images
+        return image_map
     end)
     reader:close()
-    if not ok or not images then
+    if not ok or not image_map then
         if not ok then
-            logger.warn("zhifou favorite local extract failed:", tostring(images))
+            logger.warn("zhifou favorite local extract failed:", tostring(image_map))
         end
         return nil
     end
-    return images
+    return image_map
 end
 
 --- 收藏一篇文章：提取图片 → 生成自包含单篇快照 EPUB → 追加索引。
 -- issue_path 为本期 EPUB 路径：给出时优先就地提取图片（零网络），不可行再回退下载。
 -- progress_cb(text) 返回 false 可中止；中止/失败返回 nil, 原因。
-function favorites.add(article, issue_path, progress_cb)
+--- 收藏一篇文章为单篇快照 EPUB。
+-- @param progress_cb 可选：进度回调，返回 false 表示用户取消
+-- @param with_gray 可选：图片转灰度（与设置里的开关一致；仅下载回退路径用得上）
+function favorites.add(article, issue_path, progress_cb, with_gray)
     if not article or not article.title then
         return nil, "缺少文章信息"
     end
@@ -345,14 +397,14 @@ function favorites.add(article, issue_path, progress_cb)
 
     -- 1) 图片：首选从本期 EPUB 就地提取（构建期已下载过的原图，零网络）；
     --    本地不可行时回退逐张下载
-    local images
+    local image_map
     if issue_path then
         if progress_cb and progress_cb("正在从本期提取图片…（点击可取消）") == false then
             return nil, "已取消"
         end
-        images = extract_images_from_issue(article, issue_path)
+        image_map = extract_images_from_issue(article, issue_path)
     end
-    if not images then
+    if not image_map then
         -- 回退：按 URL 去重、上限 MAX_IMAGES；单张失败静默跳过，正文照常收藏
         local pending, seen = {}, {}
         for _, block in ipairs(article.blocks or {}) do
@@ -361,7 +413,9 @@ function favorites.add(article, issue_path, progress_cb)
                 pending[#pending + 1] = block.img
             end
         end
-        images = {}
+        image_map = {}
+        -- 与每日抓取同一套闸门：单张上限 + 本篇总额度（下载回退路径才有网络开销）
+        local budget = images.new_budget()
         for i, url in ipairs(pending) do
             if progress_cb then
                 local go_on = progress_cb(string.format("下载图片 %d/%d…（点击可取消）", i, #pending))
@@ -369,17 +423,19 @@ function favorites.add(article, issue_path, progress_cb)
                     return nil, "已取消"
                 end
             end
-            -- 与每日抓取同规则：CDN 缩放 800；HTTP 400（超高图）降级 480 重试
-            local target = imgurl.rewrite(url, 800) or url
-            local data, err = http.get(target, nil, nil, nil, { referer = imgurl.referer(target) })
-            if not data and err and err:find("HTTP 400", 1, true) then
-                local fallback = imgurl.rewrite(url, 480)
-                if fallback then
-                    data = http.get(fallback, nil, nil, nil, { referer = imgurl.referer(fallback) })
-                end
-            end
-            if data and #data > 0 then
-                images[url] = { data = data, ext = image_ext(url) }
+            -- 与每日抓取同规则：CDN 缩放/转 JPEG/灰度 → 魔数判型 → 体积额度
+            local image = images.fetch(url, {
+                download = function(target)
+                    return http.get(target, nil, nil, nil, { referer = imgurl.referer(target) })
+                end,
+                rewrite = imgurl.rewrite,
+                budget = budget,
+                gray = with_gray,
+            })
+            if image then
+                image_map[url] = image
+            elseif image == nil then
+                logger.info("zhifou favorites image skipped:", url)
             end
         end
     end
@@ -392,8 +448,10 @@ function favorites.add(article, issue_path, progress_cb)
     local ok, build_err = pcall(epub.build, {
         title = article.title,
         date = os.date("%Y-%m-%d", now),
+        -- 每篇快照各自唯一：同一天收藏多篇时 identifier 不能相同
+        identifier = "zhifou-fav-" .. os.date("%Y%m%d-%H%M%S", now),
         items = { article },
-        images = images,
+        images = image_map,
         no_cover = true,    -- 收藏快照：无封面页
         no_overview = true, -- 无目录页（打开即正文）
     }, path)

@@ -84,6 +84,9 @@ end
 
 local function escape(value)
     value = tostring(value or "")
+    -- XML 1.0 不允许的控制字符（保留 \t \n \r）：源站偶发带进正文，
+    -- 直接写进 xhtml 会让整篇成为非法 XML（xmllint 报 PCDATA invalid Char value）
+    value = value:gsub("[%z\1-\8\11\12\14-\31]", "")
     value = value:gsub("&", "&amp;")
     value = value:gsub("<", "&lt;")
     value = value:gsub(">", "&gt;")
@@ -202,17 +205,19 @@ local function build_ncx(toc, identifier, title)
             .. '<content src="text/' .. entry_href
             .. (fragment and ("#" .. fragment) or "") .. '"/>'
     end
-    -- 目录项 → navPoint；带 subs（文内小标题）时内嵌一层锚点子节点
+    -- 目录项 → navPoint；带 subs（文内小标题）时内嵌一层锚点子节点。
+    -- 父节点的 id/playOrder 必须先分配：NCX 要求 playOrder 在文档流中递增，
+    -- 先给子节点编号会出现「父 nav-4 内含 nav-2/nav-3」这种倒挂。
     local function entry_point(entry)
+        local head = point_head(toc_label(entry), entry.href)
         if not entry.subs then
-            return point_head(toc_label(entry), entry.href) .. "</navPoint>"
+            return head .. "</navPoint>"
         end
         local children = {}
         for _, sub in ipairs(entry.subs) do
             children[#children + 1] = point_head(sub.title, entry.href, sub.anchor) .. "</navPoint>"
         end
-        return point_head(toc_label(entry), entry.href)
-            .. "\n" .. table.concat(children, "\n") .. "\n</navPoint>"
+        return head .. "\n" .. table.concat(children, "\n") .. "\n</navPoint>"
     end
     local depth = 1
     for _, entry in ipairs(toc) do
@@ -220,11 +225,32 @@ local function build_ncx(toc, identifier, title)
         if entry.subs then
             depth = 2
         end
-    end    return [[<?xml version="1.0" encoding="utf-8"?>
+    end
+    return [[<?xml version="1.0" encoding="utf-8"?>
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><head>
 <meta name="dtb:uid" content="]] .. escape(identifier) .. [["/><meta name="dtb:depth" content="]] .. depth .. [["/>
 </head><docTitle><text>]] .. escape(title) .. "</text></docTitle><navMap>"
         .. table.concat(points, "\n") .. "</navMap></ncx>"
+end
+
+--- 文件是否是一个写完整的 ZIP/EPUB：长度下限 + 结尾必须是 EOCD 记录。
+-- 用途：写盘收尾自检，以及缓存命中前的判定——写盘中断（磁盘满/断电）会留下
+-- 「文件存在但内容截断」的 EPUB，若当成有效缓存，阅读器会报 invalid document
+-- 且永远不会自动重抓。本函数只读结尾 4 字节，开销可忽略。
+function Epub.is_complete(path)
+    local file = io.open(path, "rb")
+    if not file then return false end
+    local size = file:seek("end")
+    -- 空 ZIP 也有 22 字节 EOCD；小于此值必定不完整
+    if not size or size < 22 then
+        file:close()
+        return false
+    end
+    file:seek("set", size - 22)
+    local tail = file:read(4)
+    file:close()
+    -- EOCD 签名 "PK\005\006"（本插件写出的包不带注释，EOCD 恒在末尾）
+    return tail == "PK\005\006"
 end
 
 --- 构建一期 EPUB（含图片块）。
@@ -240,7 +266,11 @@ function Epub.build(data, output_path)
     local items = assert(data.items, "missing items")
     assert(#items > 0, "empty items")
     local title = data.title or ("知否 · " .. date)
-    local identifier = "zhifou-" .. date
+    -- unique-identifier：同一天的合并期与各单源期、以及每篇收藏快照都必须互不相同，
+    -- 否则阅读器书库会把它们当成同一本书（此前固定 "zhifou-<日期>"）。
+    -- 调用方可传 data.identifier（如 issue_id）；缺省退化为「日期 + 构建时刻」。
+    local identifier = data.identifier
+        or string.format("zhifou-%s-%d", date, os.time())
     local toc = {}
     local chapters = {}
     local image_entries = {}
@@ -384,14 +414,29 @@ function Epub.build(data, output_path)
         spine[#spine + 1] = string.format('<itemref idref="ch%d"/>', index)
         entries[#entries + 1] = { name = "OEBPS/text/" .. chapter.href, data = chapter.body }
     end
-    -- 附录图片文件
-    for _, image in ipairs(image_entries) do
+    -- 图片：写进 ZIP 的同时登记进 manifest（EPUB3 要求所有资源都在 manifest 声明；
+    -- 此前只写文件不登记——epubcheck 报错，其它阅读器/转换链可能直接丢图）
+    local cover_manifest_id
+    for index, image in ipairs(image_entries) do
+        local href = image.name:gsub("^OEBPS/", "")
+        local ext = href:match("%.([%w]+)$") or "jpg"
+        if not cover_manifest_id and cover and cover.data and image.data == cover.data then
+            -- 封面就是从正文里挑的第一张图：内容相同就不再存第二份（省一张最大图），
+            -- 直接把这一个 manifest 项标记为封面
+            cover_manifest_id = "cover-image"
+            manifest[#manifest + 1] = string.format(
+                '<item id="cover-image" href="%s" media-type="%s" properties="cover-image"/>',
+                href, media_type(ext))
+        else
+            manifest[#manifest + 1] = string.format(
+                '<item id="img-%d" href="%s" media-type="%s"/>', index, href, media_type(ext))
+        end
         entries[#entries + 1] = image
     end
 
     -- 封面：只留元数据封面（书架缩略图用），不生成封面页——打开即目录/概览页
     -- （2026-09-27 按用户要求去掉目录页前的封面图页）
-    if cover and cover.data then
+    if cover and cover.data and not cover_manifest_id then
         local ext = cover.ext or "jpg"
         local cover_name = "cover." .. ext
         entries[#entries + 1] = {
@@ -401,12 +446,14 @@ function Epub.build(data, output_path)
         manifest[#manifest + 1] = '<item id="cover-image" href="images/'
             .. cover_name .. '" media-type="' .. media_type(ext)
             .. '" properties="cover-image"/>'
+        cover_manifest_id = "cover-image"
     end
     entries[#entries + 1] = { name = "OEBPS/content.opf", data = [[<?xml version="1.0" encoding="utf-8"?>
-<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" version="3.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" version="3.0" prefix="dcterms: http://purl.org/dc/terms/"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
 <dc:identifier id="bookid">]] .. escape(identifier) .. "</dc:identifier><dc:title>" .. escape(title) .. [[</dc:title>
 <dc:creator>Isword</dc:creator><dc:language>zh-CN</dc:language><dc:date>]] .. escape(date) .. [[</dc:date>
-]] .. (cover and cover.data and '<meta name="cover" content="cover-image"/>' or "") .. [[
+<meta property="dcterms:modified">]] .. os.date("!%Y-%m-%dT%H:%M:%SZ") .. [[</meta>
+]] .. (cover_manifest_id and '<meta name="cover" content="cover-image"/>' or "") .. [[
 </metadata><manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/><item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/><item id="style" href="style.css" media-type="text/css"/>
 ]] .. table.concat(manifest, "\n") .. "</manifest><spine toc=\"ncx\">" .. table.concat(spine, "\n") .. "</spine></package>" }
 
@@ -414,7 +461,21 @@ function Epub.build(data, output_path)
     local file, err = io.open(temporary_path, "wb")
     if not file then error(err) end
     write_zip(entries, file, temporary_path)
-    file:close()
+    -- 收尾必须检查返回值：stdio 有缓冲，磁盘满/配额不足只会在 flush/close 时暴露。
+    -- 旧实现忽略 close 的返回值，于是被截断的 .part 照样改名成正式 EPUB，
+    -- 之后被当成有效缓存打开（阅读器报 unsupported or invalid document）。
+    local flushed, flush_err = file:flush()
+    local closed, close_err = file:close()
+    if not flushed or not closed then
+        os.remove(temporary_path)
+        error(string.format("写入 EPUB 失败：%s（%s）",
+            temporary_path, tostring(flush_err or close_err)))
+    end
+    -- 结构自检：确认产物以 EOCD 结尾，挡住「没报错但写了一半」的截断文件
+    if not Epub.is_complete(temporary_path) then
+        os.remove(temporary_path)
+        error(string.format("写入 EPUB 失败：%s（文件不完整）", temporary_path))
+    end
     local renamed, rename_err = os.rename(temporary_path, output_path)
     if not renamed then
         os.remove(temporary_path)

@@ -62,6 +62,30 @@ function updater.candidate_urls(url)
     return urls
 end
 
+--- 判断发行包内某条目能否解压，返回可写的相对路径（不能则返回 nil, 原因）。
+-- 规则：
+--   1) 只接受普通文件与目录——符号链接/设备节点等一律拒绝。KOReader 的
+--      Archiver.Reader:extractToPath 只设置 ARCHIVE_EXTRACT_SECURE_NODOTDOT，
+--      不阻止创建符号链接，包内一个链接条目就能让后续条目写到暂存目录之外。
+--      mode 为 nil（更老的 KOReader 不提供该字段）时按普通文件处理。
+--   2) 必须在已知的顶层目录前缀内，剥掉前缀后不能为空、不能含 ".."。
+--      带尾斜杠的目录条目相对路径为空 → 跳过（libarchive 解压文件时会自动建父目录）。
+function updater.entry_rel_path(path, mode, prefixes)
+    if mode ~= nil and mode ~= "file" and mode ~= "directory" then
+        return nil, "non-regular"
+    end
+    if type(path) ~= "string" then return nil, "bad-path" end
+    for _, prefix in ipairs(prefixes or {}) do
+        if path:sub(1, #prefix) == prefix then
+            local rel = path:sub(#prefix + 1)
+            if rel == "" then return nil, "empty-rel" end
+            if rel:find("%.%.") then return nil, "dotdot" end
+            return rel
+        end
+    end
+    return nil, "outside-prefix"
+end
+
 --- 从 GitHub release 数据解析可用更新（纯函数）。
 -- 约束：非 draft/prerelease、tag 形如 v1.2.3、含 .zip 资产、体积不超上限
 function updater.parse_release(release)
@@ -204,16 +228,16 @@ function updater.install(zip_path, expected_version)
     local unpack_err, unpacked = nil, 0
     for entry in reader:iterate() do
         local path = entry.path
-        local rel
-        if type(path) == "string" then
-            for _, prefix in ipairs(prefixes) do
-                if path:sub(1, #prefix) == prefix then
-                    rel = path:sub(#prefix + 1)
-                    break
-                end
-            end
+        -- 只接受普通文件与目录：KOReader 的 extractToPath 仅设
+        -- ARCHIVE_EXTRACT_SECURE_NODOTDOT（挡 ".."），**不阻止创建符号链接**——
+        -- 包内放一个 "zhifou.koplugin/zhifou -> /目标目录" 的链接条目，
+        -- 后续条目就会写到插件目录之外（下载的是要执行的代码，等于代码执行）。
+        local rel, skip_reason = updater.entry_rel_path(path, entry.mode, prefixes)
+        if skip_reason == "non-regular" then
+            logger.warn("zhifou updater: skip non-regular entry:",
+                tostring(path), tostring(entry.mode))
         end
-        if rel and rel ~= "" and not rel:find("%.%.") then
+        if rel then
             if not reader:extractToPath(path, stage .. "/" .. rel) then
                 unpack_err = reader.err or "解压失败"
                 break

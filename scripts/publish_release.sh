@@ -4,8 +4,8 @@
 # 用法:  bash scripts/publish_release.sh [--notes-file <文件>]
 # 前置:  工作区干净；版本号单一来源 = zhifou.koplugin/main.lua 的 version
 # 产物:  GitHub Release v<版本>，资产 = zhifou.koplugin-v<版本>.zip
-#        （过渡：v0.1.13 顶层目录仍为 technews.koplugin/，便于老版本在线更新安装；
-#          新更新器已兼容两种前缀，下一版起改为 zhifou.koplugin/）
+#        （v0.1.14 起发行包顶层目录为 zhifou.koplugin/；v0.1.13 及更早是过渡期的
+#          technews.koplugin/，更新器两种前缀都接受，见 updater.LEGACY_ASSET_PREFIX）
 # 备注:  直连 GitHub 超时时走代理：HTTPS_PROXY=http://127.0.0.1:1087 bash scripts/publish_release.sh
 set -euo pipefail
 
@@ -21,10 +21,15 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
     exit 1
 fi
 
+# 发布门禁：包发出去就是设备端可在线安装的代码，先过测试与静态检查
+echo "==> 发布前检查：规格测试 + luacheck"
+bash scripts/run_specs.sh >/dev/null
+luacheck zhifou.koplugin spec
+
 OUT_DIR="$(mktemp -d)"
 trap 'rm -rf "$OUT_DIR"' EXIT
 ZIP="$OUT_DIR/zhifou.koplugin-$TAG.zip"
-git archive --format=zip --prefix="technews.koplugin/" -o "$ZIP" "HEAD:zhifou.koplugin"
+git archive --format=zip --prefix="zhifou.koplugin/" -o "$ZIP" "HEAD:zhifou.koplugin"
 echo "打包完成: ${ZIP}（版本 ${TAG}）"
 
 if [ "${1:-}" = "--notes-file" ] && [ -n "${2:-}" ]; then
