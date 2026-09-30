@@ -19,6 +19,66 @@ local http = {}
 -- 单次响应的默认字节上限：feed/HTML/JSON 都远小于它，纯粹是防「异常大响应把内存打爆」
 -- （调用方可用 opts.max_bytes 覆盖，例如图片按 2MB 卡）
 http.MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+
+-- gzip 状态：{ checked, usable, broken }
+--   usable：本平台能否加载 zlib（探测一次）
+--   broken：运行期发现解压不可靠（例如某平台的 zlib 异常）→ 永久改走明文
+-- 设计原则：压缩是「省流量」的优化，**任何情况下都不允许它让抓取失败**。
+local gzip_state = { checked = false, usable = false, broken = false }
+http.GZIP_SETTING = "zhifou_gzip_off"
+
+local function settings_flag()
+    local settings = rawget(_G, "G_reader_settings")
+    if settings and settings.readSetting then
+        return settings:readSetting(http.GZIP_SETTING) == true
+    end
+    return false
+end
+
+local function save_broken_flag()
+    local settings = rawget(_G, "G_reader_settings")
+    if settings and settings.saveSetting then
+        settings:saveSetting(http.GZIP_SETTING, true)
+    end
+end
+
+--- 是否可以声明 Accept-Encoding: gzip
+function http.gzip_usable()
+    if gzip_state.broken then return false end
+    if settings_flag() then
+        gzip_state.broken = true
+        return false
+    end
+    if not gzip_state.checked then
+        gzip_state.checked = true
+        -- 连 require 都要 pcall：模块里的 ffi.cdef/库加载在某些平台上会抛错
+        local ok, mod = pcall(require, "zhifou.gzip")
+        gzip_state.usable = ok and type(mod) == "table"
+            and type(mod.available) == "function" and mod.available() == true
+        if not gzip_state.usable then
+            logger.warn("zhifou http: gzip unavailable on this platform, using plain requests")
+        end
+    end
+    return gzip_state.usable
+end
+
+--- 重置 gzip 状态（单测用；顺手清掉落盘标记，让下次启动重新探测）
+function http.reset_gzip_state()
+    gzip_state.checked, gzip_state.usable, gzip_state.broken = false, false, false
+    local settings = rawget(_G, "G_reader_settings")
+    if settings and settings.delSetting then
+        settings:delSetting(http.GZIP_SETTING)
+    end
+end
+
+--- 标记 gzip 不可靠（运行期解压失败时调用）：本次及以后都走明文，并落盘记住
+function http.disable_gzip(reason)
+    if not gzip_state.broken then
+        logger.warn("zhifou http: disabling gzip for this device:", tostring(reason))
+    end
+    gzip_state.broken = true
+    save_broken_flag()
+end
 -- 退避上限与抖动上限（秒）
 http.MAX_BACKOFF = 3
 local MAX_RETRY_AFTER = 10
@@ -76,15 +136,10 @@ local function request_once(url, block_timeout, total_timeout, referer, opts)
         ["Accept-Language"] = "zh-CN,zh;q=0.9,en;q=0.8",
     }
     -- 声明支持压缩：feed/HTML/JSON 压完能小一个数量级（读首诗再睡觉 2.01MB → 204KB）。
-    -- 但**必须先确认本平台能解压**：某些构建（如部分 Android 设备）可能加载不到 libz，
-    -- 那样「所有服务端都按 gzip 回，我们却解不开」= 全部源抓取失败。
-    -- 拿不到 zlib 就不声明压缩，让服务端回明文，功能降级但不影响可用性。
-    local ok_gzip, gzip_mod = pcall(require, "zhifou.gzip")
-    if ok_gzip and gzip_mod and gzip_mod.available() then
+    -- 但压缩只是优化：本平台解压不可靠时一律不声明（服务端回明文），
+    -- 否则「所有服务端都按 gzip 回、我们却解不开」= 全部源抓取失败。
+    if not opts.no_gzip and http.gzip_usable() then
         req_headers["Accept-Encoding"] = "gzip, deflate"
-    else
-        logger.warn("zhifou http: gzip unavailable on this platform, "
-            .. "sending plain requests")
     end
     -- 部分图床 CDN（如少数派 cdnfile.sspai.com）不带 Referer 会返回 403；
     -- 而微信图床 mmbiz.qpic.cn 正相反：带第三方 Referer 会被换成 140x140 占位图。
@@ -154,9 +209,16 @@ local function request_once(url, block_timeout, total_timeout, referer, opts)
     -- 少数 CDN 即使没被请求也会回 gzip，所以这里只看响应头，不看我们请求了什么
     local encoding = headers and headers["content-encoding"]
     if encoding and encoding ~= "" and encoding ~= "identity" then
-        local gzip = require("zhifou.gzip")
-        local plain, unzip_err = gzip.inflate(body_text)
+        local ok_mod, gzip = pcall(require, "zhifou.gzip")
+        local plain, unzip_err
+        if ok_mod and type(gzip) == "table" and type(gzip.inflate) == "function" then
+            plain, unzip_err = gzip.inflate(body_text)
+        else
+            unzip_err = "解压模块不可用"
+        end
         if not plain then
+            -- 本平台解压不可靠：永久改走明文（并落盘），本次由 http.get 用明文立刻重试
+            http.disable_gzip(unzip_err)
             return nil, string.format("解压失败（%s：%s）", tostring(encoding), tostring(unzip_err)), meta
         end
         return plain, nil, meta
@@ -190,6 +252,16 @@ function http.get(url, block_timeout, total_timeout, retries, opts)
     local last_err
     for attempt = 1, retries + 1 do
         local body, err, meta = request_once(url, block_timeout, total_timeout, referer, opts)
+        if not body and not opts.no_gzip
+            and tostring(err):find("解压失败", 1, true) then
+            -- 解压不可靠（见 http.disable_gzip）：立刻用明文重取一次，
+            -- 不计入重试次数——用户不该因为压缩这个优化而抓不到内容
+            local plain_opts = {
+                referer = opts.referer, max_bytes = opts.max_bytes,
+                allow_truncated = opts.allow_truncated, no_gzip = true,
+            }
+            body, err, meta = request_once(url, block_timeout, total_timeout, referer, plain_opts)
+        end
         if body then
             return body
         end

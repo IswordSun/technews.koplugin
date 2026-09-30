@@ -173,7 +173,8 @@ do
     eq(body, nil, "解压失败 → 返回 nil")
     ok(tostring(err):find("解压失败", 1, true) ~= nil, "错误里点明「解压失败」", tostring(err))
     ok(tostring(err):find("gzip", 1, true) ~= nil, "错误里带上编码名", tostring(err))
-    eq(#calls, 1, "解压失败不重试（只请求一次）")
+    eq(#calls, 2, "解压失败会立刻用明文重取一次（共 2 次请求；仍失败才报错）")
+    http.reset_gzip_state()
 end
 
 ----------------------------------------------------------------------
@@ -287,6 +288,7 @@ end
 
 do
     reset()
+    http.reset_gzip_state()
     local gzip = require("zhifou.gzip")
     local saved_available = gzip.available
     gzip.available = function() return false end
@@ -296,6 +298,7 @@ do
     eq(calls[1].headers["Accept-Encoding"], nil,
         "解压不可用时**不发送** Accept-Encoding（服务端会回明文）")
     gzip.available = saved_available
+    http.reset_gzip_state()
 
     reset()
     response = { body = "plain", headers = {} }
@@ -303,6 +306,46 @@ do
     eq(calls[1].headers["Accept-Encoding"], "gzip, deflate",
         "解压可用时照常声明压缩")
     eq(gzip.available(), true, "本机 zlib 可用（模拟器/桌面）")
+end
+
+----------------------------------------------------------------------
+-- 1c) 解压失败的兜底：必须自动改走明文，绝不能因此抓不到内容
+----------------------------------------------------------------------
+
+do
+    reset()
+    http.reset_gzip_state()
+    -- 先让 gzip 可用（默认状态），第一次响应是坏的 gzip，之后是明文
+    local attempts = {}
+    transport.request = function(req)
+        local accept = req.headers["Accept-Encoding"]
+        attempts[#attempts + 1] = accept or "none"   -- 注意：存 nil 不会让表变长
+        if accept then
+            -- 声明了压缩 → 服务端回 gzip（但数据是坏的，模拟平台解压不可靠）
+            if req.sink then req.sink("not really gzip") end
+            return 1, 200, { ["content-encoding"] = "gzip" }, "HTTP/1.1 200 OK"
+        end
+        -- 没声明压缩 → 服务端回明文（这才是真实行为）
+        if req.sink then req.sink("plain body") end
+        return 1, 200, {}, "HTTP/1.1 200 OK"
+    end
+    local body, err = http.get("https://example.com/broken-gzip")
+    eq(#attempts, 2, "解压失败后立刻用明文重取一次（共 2 次请求）")
+    eq(attempts[1], "gzip, deflate", "第一次仍声明压缩")
+    eq(attempts[2], "none", "重取时不声明压缩")
+    eq(body, "plain body", "拿到了明文内容（用户不受影响）")
+    eq(err, nil, "不报错")
+    eq(http.gzip_usable(), false, "gzip 被标记为不可用（后续请求都走明文）")
+
+    -- 后续请求不应再声明压缩
+    reset()
+    transport.request = fake_request
+    response = { body = "later", headers = {} }
+    eq(http.get("https://example.com/later"), "later", "后续请求正常")
+    eq(calls[1].headers["Accept-Encoding"], nil, "后续请求不再声明压缩（熔断保持）")
+
+    -- 清理：让后续用例回到可用状态
+    http.reset_gzip_state()
 end
 
 ----------------------------------------------------------------------
