@@ -341,5 +341,37 @@ do
 end
 
 ----------------------------------------------------------------------
+-- 额度随分辨率缩放：选了更高分辨率不该变成「更多图被略过」
+----------------------------------------------------------------------
+
+do
+    local MB = 1024 * 1024
+    eq(images.scale_budget(12 * MB, 800), 12 * MB, "800（基准）额度不变")
+    eq(images.scale_budget(12 * MB, 480), 12 * MB, "低于基准也不缩小")
+    eq(images.scale_budget(12 * MB, nil), 12 * MB, "未配置按基准")
+    eq(images.scale_budget(12 * MB, "abc"), 12 * MB, "非法值按基准")
+
+    local w1072 = images.scale_budget(12 * MB, 1072)   -- Kindle PW
+    local w1404 = images.scale_budget(12 * MB, 1404)   -- Boox Nova3
+    local w1800 = images.scale_budget(12 * MB, 1800)
+    ok(w1072 > 12 * MB and w1072 < 15 * MB, "1072 档略放大", tostring(w1072))
+    ok(w1404 > w1072 and w1404 < 18 * MB, "1404 档再大些", tostring(w1404))
+    ok(w1800 > w1404 and w1800 < 21 * MB, "1800 档最大", tostring(w1800))
+
+    -- 实测依据：1800px 那期约 96KB/张（800px 约 39KB/张）→ 12.5MB 会撞上 12MB 上限，
+    -- 缩放后的 19.5MB 能装下整期 130 张（约 12.5MB）
+    ok(w1800 > 12.5 * MB, "缩放后能容纳实测的 12.5MB 整期")
+
+    local b = images.new_budget({ width = 1404 })
+    eq(b.max_total_bytes, w1404, "new_budget 用缩放后的整期额度")
+    eq(b.max_image_bytes, images.scale_budget(images.MAX_IMAGE_BYTES, 1404),
+        "单张额度同样缩放")
+    local d = images.new_budget()
+    eq(d.max_total_bytes, images.MAX_TOTAL_BYTES, "不传宽度时保持默认额度")
+    local e = images.new_budget({ width = 1404, max_total_bytes = 999 })
+    eq(e.max_total_bytes, 999, "显式额度优先于缩放")
+end
+
+----------------------------------------------------------------------
 print(("%d checks, %d failed"):format(checks, failed))
 if failed > 0 then os.exit(1) end

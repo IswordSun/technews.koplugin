@@ -486,7 +486,10 @@ function favorites.add(article, issue_path, progress_cb, with_gray, widths)
         end
         image_map = {}
         -- 与每日抓取同一套闸门：单张上限 + 本篇总额度（下载回退路径才有网络开销）
-        local budget = images.new_budget()
+        -- 额度随分辨率设置放大（与每日抓取同一套规则）
+        local budget = images.new_budget({
+            width = widths and widths[1] or nil,
+        })
         for i, url in ipairs(pending) do
             if progress_cb then
                 local go_on = progress_cb(string.format("下载图片 %d/%d…（点击可取消）", i, #pending))

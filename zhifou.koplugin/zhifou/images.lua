@@ -25,6 +25,24 @@ images.MAX_WIDTH = 2400     -- 目标宽度上限（再宽对墨水屏只是白�
 images.MIN_DEGRADE_WIDTH = 160  -- 降档是最后手段：允许比目标下限更窄
 images.DEGRADE_RATIO = 0.6  -- 降档宽度 = 目标宽 × 0.6（原 800 → 480）
 
+--- 目标宽度下的体积额度缩放系数。
+-- 为什么需要：额度（单张 1.5MB / 整期 12MB）是按 800px 定的；用户把分辨率调到
+-- 1200–1800 之后，同一批图会明显更大 —— 实测同一期：800px 约 39KB/张（整期 5.8MB），
+-- 1800px 约 96KB/张（整期 12.5MB）→ 直接撞上整期上限、反而「更多图被略过」。
+-- 面积涨 5.06× 而字节只涨 2.5×（CDN 的 JPEG 压缩收益），故按 (w/800)^0.6 放大额度。
+images.BUDGET_BASE_WIDTH = 800
+images.BUDGET_EXPONENT = 0.6
+
+--- 把基础额度按目标宽度放大（目标宽 ≤ 基准宽时原样返回）
+function images.scale_budget(bytes, target)
+    target = tonumber(target) or images.DEFAULT_WIDTH
+    if type(bytes) ~= "number" or target <= images.BUDGET_BASE_WIDTH then
+        return bytes
+    end
+    local factor = (target / images.BUDGET_BASE_WIDTH) ^ images.BUDGET_EXPONENT
+    return math.floor(bytes * factor + 0.5)
+end
+
 --- 由目标宽度算出「候选宽度表」：先按目标宽取，失败再降档。
 -- 为什么要有降档：CDN 对超高图（如 706x22389）会因边长超限返回 400，
 -- 换小宽度就能正常返回；单张仍超体积上限时同理。
@@ -99,11 +117,18 @@ local Budget = {}
 Budget.__index = Budget
 
 --- @param opts 可选 { max_image_bytes = , max_total_bytes = }
+-- @param opts.max_image_bytes / max_total_bytes 显式额度（优先）
+-- @param opts.width 目标宽度：单张与整期额度会按 images.scale_budget 放大
 function images.new_budget(opts)
     opts = opts or {}
+    local width = opts.width
+    local max_image = opts.max_image_bytes
+        or images.scale_budget(images.MAX_IMAGE_BYTES, width)
+    local max_total = opts.max_total_bytes
+        or images.scale_budget(images.MAX_TOTAL_BYTES, width)
     return setmetatable({
-        max_image_bytes = opts.max_image_bytes or images.MAX_IMAGE_BYTES,
-        max_total_bytes = opts.max_total_bytes or images.MAX_TOTAL_BYTES,
+        max_image_bytes = max_image,
+        max_total_bytes = max_total,
         bytes = 0,
         count = 0,
         skipped = 0,

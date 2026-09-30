@@ -588,6 +588,14 @@ function TechNews:askMergedIssueRange()
 end
 
 --- 「订阅源设置」子菜单：每个登记源一个勾选项（勾选即生效并清今日缓存）
+--- 复选/单选条目点击后原地刷新。
+-- KOReader 只在条目带 checked/checked_func 时才会自动 updateItems（touchmenu.lua
+-- 的 onMenuSelect），而插件用 ☑/☐ 写进 text_func，所以要在回调里自己刷新，
+-- 否则点了之后标记不变、要退出菜单再进才更新。回调的第一个参数就是菜单本体。
+local function refresh_menu(menu)
+    if menu and menu.updateItems then menu:updateItems() end
+end
+
 function TechNews:getSourceSettingItems()
     local items = {}
     for _, source in ipairs(registry) do
@@ -598,7 +606,7 @@ function TechNews:getSourceSettingItems()
                 return mark .. source.name
             end,
             keep_menu_open = true,
-            callback = function()
+            callback = function(menu)
                 -- 以当前启用集合为基准翻转本项，另存为新集合
                 local ids = {}
                 for _, adapter in ipairs(subscriptions.enabled(registry, self:sourceSetting())) do
@@ -611,6 +619,7 @@ function TechNews:getSourceSettingItems()
                     set[source.id] = true
                 end
                 self:setSourceSetting(set)
+                refresh_menu(menu)
             end,
         }
     end
@@ -799,11 +808,12 @@ function TechNews:getSettingItems()
                 text_func = function()
                     return (self:withImages() and "☑ " or "☐ ") .. "包含图片"
                 end,
-                callback = function()
+                callback = function(menu)
                     G_reader_settings:saveSetting("zhifou_with_images",
                         not self:withImages())
                     -- 切换后当天缓存作废，下次打开重新生成
                     storage:clear_date(today_str())
+                    refresh_menu(menu)
                 end,
             },
             {
@@ -813,10 +823,11 @@ function TechNews:getSettingItems()
                     return (self:withGrayImages() and "☑ " or "☐ ")
                         .. "图片转灰度（省体积）"
                 end,
-                callback = function()
+                callback = function(menu)
                     G_reader_settings:saveSetting("zhifou_gray_images",
                         not self:withGrayImages())
                     storage:clear_date(today_str())
+                    refresh_menu(menu)
                 end,
             },
             {
@@ -837,8 +848,9 @@ function TechNews:getSettingItems()
                                         auto_width)
                             end,
                             keep_menu_open = true,
-                            callback = function()
+                            callback = function(menu)
                                 self:setImageWidth(nil)
+                                refresh_menu(menu)
                             end,
                         },
                     }
@@ -851,8 +863,9 @@ function TechNews:getSettingItems()
                                             and "（默认）" or "")
                             end,
                             keep_menu_open = true,
-                            callback = function()
+                            callback = function(menu)
                                 self:setImageWidth(width)
+                                refresh_menu(menu)
                             end,
                         }
                     end
@@ -1496,11 +1509,14 @@ function TechNews:fetchSource(source, limit, progress, range)
         local cap = (progress and progress.image_budget) or MAX_IMAGES_PER_ISSUE
         if cap < 0 then cap = 0 end
         local total = math.min(#pending, cap)
-        -- 字节额度：合并期跨源共享（调用方传入同一个 budget 才生效）
-        local budget = (progress and progress.image_bytes_budget) or images.new_budget()
         local gray = self:withGrayImages()
         -- 图片分辨率（设置 → 图片显示 → 图片分辨率）：目标宽 → 降档宽
+        local target_width = self:imageTargetWidth()
         local target_widths = self:imageWidths()
+        -- 字节额度：合并期跨源共享（调用方传入同一个 budget 才生效）；
+        -- 额度随分辨率放大——选了更高分辨率不该变成「更多图被略过」
+        local budget = (progress and progress.image_bytes_budget)
+            or images.new_budget({ width = target_width })
         local deadline = progress and progress.deadline
         local started_at = os.time()
         -- 按图床记账：同一 host 连续失败到阈值就跳过它剩下的图
@@ -1956,8 +1972,9 @@ function TechNews:fetchAndOpenMerged(issue_id, date, range)
         local all_images = {}
         local failed = {}
         local image_budget = MAX_IMAGES_PER_ISSUE
-        -- 字节额度跨源共享：否则每个源各留 12MB，整期仍可能到几十 MB
-        local bytes_budget = images.new_budget()
+        -- 字节额度跨源共享：否则每个源各留 12MB，整期仍可能到几十 MB；
+        -- 额度随「图片分辨率」设置放大（高分辨率下同一批图本就更大）
+        local bytes_budget = images.new_budget({ width = self:imageTargetWidth() })
         local image_skips = 0
         -- 整期时间预算：超了就停止后续源，并在完成提示里说明
         local deadline = os.time() + FETCH_BUDGET_SECONDS
