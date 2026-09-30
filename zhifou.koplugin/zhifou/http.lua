@@ -16,10 +16,57 @@ local logger = require("logger")
 
 local http = {}
 
+-- 单次响应的默认字节上限：feed/HTML/JSON 都远小于它，纯粹是防「异常大响应把内存打爆」
+-- （调用方可用 opts.max_bytes 覆盖，例如图片按 2MB 卡）
+http.MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+-- 退避上限与抖动上限（秒）
+http.MAX_BACKOFF = 3
+local MAX_RETRY_AFTER = 10
+-- 这些错误是确定性的，重试只会白白再下一次整个响应体
+local FATAL_ERRORS = { "解压失败", "响应过大" }
+
 local UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 
-local function request_once(url, block_timeout, total_timeout, referer)
+--- 解析 Retry-After（秒数或 HTTP-date），钳制在 [0, MAX_RETRY_AFTER]
+local function retry_after_seconds(headers)
+    local value = headers and headers["retry-after"]
+    if not value then return nil end
+    value = tostring(value):gsub("^%s+", ""):gsub("%s+$", "")
+    local seconds = tonumber(value)
+    if seconds then
+        return math.max(0, math.min(seconds, MAX_RETRY_AFTER))
+    end
+    -- HTTP-date："Wed, 21 Oct 2026 07:28:00 GMT"
+    local day, month_name, year, hour, minute, sec =
+        value:match("^%a+, (%d+) (%a+) (%d+) (%d+):(%d+):(%d+) GMT$")
+    if not day then return nil end
+    local months = { Jan = 1, Feb = 2, Mar = 3, Apr = 4, May = 5, Jun = 6,
+                     Jul = 7, Aug = 8, Sep = 9, Oct = 10, Nov = 11, Dec = 12 }
+    local month = months[month_name]
+    if not month then return nil end
+    local target = os.time{ year = tonumber(year), month = month, day = tonumber(day),
+        hour = tonumber(hour), min = tonumber(minute), sec = tonumber(sec) }
+    -- os.time{} 按本地时区解释；用「当前 UTC 时刻按本地解释」相减抵消时区差
+    local delta = target - os.time(os.date("!*t"))
+    return math.max(0, math.min(delta, MAX_RETRY_AFTER))
+end
+
+--- 是否是确定性错误（不该重试）
+local function is_fatal(err)
+    local text = tostring(err)
+    for _, marker in ipairs(FATAL_ERRORS) do
+        if text:find(marker, 1, true) then return true end
+    end
+    return false
+end
+
+-- @return body, err, meta（meta = { headers =, truncated =, status = }）
+local function request_once(url, block_timeout, total_timeout, referer, opts)
+    opts = opts or {}
+    local max_bytes = opts.max_bytes or http.MAX_RESPONSE_BYTES
     local body = {}
+    local received = 0
+    local truncated = false
     socketutil:set_timeout(
         block_timeout or socketutil.LARGE_BLOCK_TIMEOUT,
         total_timeout or socketutil.LARGE_TOTAL_TIMEOUT)
@@ -42,11 +89,35 @@ local function request_once(url, block_timeout, total_timeout, referer)
     local transport = url:match("^http://") and socket_http or https
     -- LuaSocket：成功时返回 (1, 状态码, headers, status)；失败时返回错误码
     -- （status 状态行只在排错时有用，判定一律用数字状态码）
+    -- 手写 sink：统计字节数，超过上限直接让 LuaSocket 中断传输
+    -- （LuaSocket 的 sink 返回 nil 即中止，避免把异常大响应整份读进内存）
+    local sink = function(chunk)
+        if not chunk then return 1 end
+        if received + #chunk > max_bytes then
+            -- 超出上限：只留到上限为止的那一段（allow_truncated 的调用方拿它当「通了」的证据），
+            -- 然后返回 nil 让 LuaSocket 立刻中断传输
+            local room = max_bytes - received
+            if room > 0 then body[#body + 1] = chunk:sub(1, room) end
+            received = max_bytes
+            truncated = true
+            return nil
+        end
+        received = received + #chunk
+        body[#body + 1] = chunk
+        return 1
+    end
     local code, headers = socket.skip(1, transport.request{
         url = url,
         headers = req_headers,
-        sink = ltn12.sink.table(body),
+        sink = sink,
     })
+    if truncated and opts.allow_truncated then
+        -- 只关心「通不通」的调用方（如连通性自检）：拿到够用的数据就算成功
+        return table.concat(body), nil, { headers = headers, truncated = true }
+    end
+    if truncated then
+        return nil, string.format("响应过大（超过 %d 字节已中止）", max_bytes)
+    end
     if not code then
         return nil, tostring(headers) or "request failed"
     end
@@ -54,11 +125,12 @@ local function request_once(url, block_timeout, total_timeout, referer)
         -- "closed" / "timeout" 等连接层错误码
         return nil, "连接失败（" .. tostring(code) .. "）"
     end
+    local meta = { headers = headers, status = code }
     -- 只认数字状态码 200：LuaSocket 成功时 code 就是数字状态，
     -- 旧的 `status:find("200")` 兜底会把任何含 "200" 的状态行当成成功
     -- （status 只在日志里有意义，这里不再用它判定）
     if code ~= 200 then
-        return nil, "HTTP " .. tostring(code)
+        return nil, "HTTP " .. tostring(code), meta
     end
     local body_text = table.concat(body)
     -- 服务端压缩过就必须解压，否则上层拿到的是二进制乱码（解析会失败得莫名其妙）；
@@ -68,11 +140,17 @@ local function request_once(url, block_timeout, total_timeout, referer)
         local gzip = require("zhifou.gzip")
         local plain, unzip_err = gzip.inflate(body_text)
         if not plain then
-            return nil, string.format("解压失败（%s：%s）", tostring(encoding), tostring(unzip_err))
+            return nil, string.format("解压失败（%s：%s）", tostring(encoding), tostring(unzip_err)), meta
         end
-        return plain
+        return plain, nil, meta
     end
-    return body_text
+    return body_text, nil, meta
+end
+
+-- 可重试的状态码：5xx（服务端抽风）、408/425（超时/过早）、429（限流）
+local function retryable_status(code)
+    local text = tostring(code)
+    return text:sub(1, 1) == "5" or text == "408" or text == "425" or text == "429"
 end
 
 --- GET 请求（自动重试），返回响应体或 (nil, 错误信息)
@@ -80,33 +158,39 @@ end
 -- @param block_timeout 单次阻塞超时（秒）
 -- @param total_timeout 总超时（秒）
 -- @param retries 重试次数（默认 3，即最多尝试 4 次）
--- @param opts 可选：{ referer = "..." }，给出时随请求发送 Referer 头（图床防盗链用）
--- 备注：重试之间加短暂延迟，部分站点对高频请求会直接断连（closed），
--- 小幅退避能显著提高成功率。
--- 重试策略：仅连接层失败（错误信息无 "HTTP <状态码>"）与 HTTP 5xx 重试；
--- HTTP 4xx（失效订阅源的 404、图床 403 等）重试无意义，立即返回。
+-- @param opts 可选：
+--   referer        随请求发送 Referer 头（图床防盗链用）
+--   max_bytes      响应体字节上限（默认 http.MAX_RESPONSE_BYTES）
+--   allow_truncated 超限时把已收到的部分当成功返回（只关心「通不通」的自检用）
+-- 重试策略：连接层失败与 5xx/408/425/429 重试；其余 4xx 立即返回
+-- （失效 feed 的 404、图床 403 重试无意义）。退避为指数 + 抖动，
+-- 429 若带 Retry-After 则优先听服务端的（钳制到 10 秒内）。
 function http.get(url, block_timeout, total_timeout, retries, opts)
     retries = retries or 3
-    local referer = opts and opts.referer
+    opts = opts or {}
+    local referer = opts.referer
     local last_err
     for attempt = 1, retries + 1 do
-        local body, err = request_once(url, block_timeout, total_timeout, referer)
+        local body, err, meta = request_once(url, block_timeout, total_timeout, referer, opts)
         if body then
             return body
         end
         last_err = err
-        -- 仅连接层错误（无 "HTTP <code>" 前缀）或 5xx 可重试；4xx 等立即返回，
-        -- 避免每次失败都白等数轮超时与退避（如失效 feed 的 404）。
-        -- 解压失败也是确定性的：重试只会把整个响应体再下一次（大 feed 尤其亏），直接返回。
         local http_code = tostring(err):match("^HTTP (%d+)")
-        local fatal = (http_code and http_code:sub(1, 1) ~= "5")
-            or tostring(err):find("解压失败", 1, true) ~= nil
+        local fatal = is_fatal(err) or (http_code and not retryable_status(http_code))
         if attempt > retries or fatal then
             break
         end
+        -- 退避：0.5 / 1 / 2 秒（上限 MAX_BACKOFF）+ 0~250ms 抖动，
+        -- 避免多个源同时失败后同步重试（惊群）
+        local delay = math.min(0.5 * 2 ^ (attempt - 1), http.MAX_BACKOFF)
+        local wait = retry_after_seconds(meta and meta.headers)
+        if wait == nil then
+            wait = delay + math.random() * 0.25
+        end
         logger.warn("zhifou http retry:", url,
-            "attempt=" .. attempt, tostring(err))
-        socket.sleep(0.6)
+            string.format("attempt=%d wait=%.2fs", attempt, wait), tostring(err))
+        socket.sleep(wait)
     end
     logger.warn("zhifou http failed:", url, tostring(last_err))
     return nil, last_err

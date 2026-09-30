@@ -40,6 +40,9 @@ local registry = require("zhifou.sources.registry")
 
 -- 每期图片张数上限（安全阀：控制抓取时间；字节上限在 zhifou/images.lua）
 local MAX_IMAGES_PER_ISSUE = 150
+-- 整期抓取时间预算（秒）：正常一期约 1 分钟，这里留足余量，
+-- 只用来兜住「某个源被墙/服务器装死」把整期拖到十几分钟的情况
+local FETCH_BUDGET_SECONDS = 300
 
 local TechNews = WidgetContainer:extend{
     name = "zhifou",
@@ -141,7 +144,10 @@ end
 -- 下载图片：按图床决定是否附带 Referer
 -- （少数派 cdnfile.sspai.com 不带 Referer 会 403；其余图床不带，见 imgurl.referer）
 local function download_image(url)
-    return http.get(url, nil, nil, nil, { referer = imgurl.referer(url) })
+    return http.get(url, nil, nil, nil, {
+        referer = imgurl.referer(url),
+        max_bytes = images.MAX_DOWNLOAD_BYTES,
+    })
 end
 
 function TechNews:init()
@@ -1102,6 +1108,7 @@ function TechNews:fetchSource(source, limit, progress, range)
     -- 2) 下载图片（可关闭；张数上限 + 字节额度，见 zhifou/images.lua）
     local downloaded = {}
     local image_skips = 0
+    local hit_deadline = false   -- 图片阶段是否因整期时间预算提前收手
     if self:withImages() then
         local pending = {}
         local seen = {}
@@ -1120,7 +1127,15 @@ function TechNews:fetchSource(source, limit, progress, range)
         -- 字节额度：合并期跨源共享（调用方传入同一个 budget 才生效）
         local budget = (progress and progress.image_bytes_budget) or images.new_budget()
         local gray = self:withGrayImages()
+        local deadline = progress and progress.deadline
         for i = 1, total do
+            -- 每 10 张查一次时钟：某源图片服务器装死时，别把整期时间耗在它身上
+            if deadline and i % 10 == 1 and os.time() > deadline then
+                hit_deadline = true
+                logger.warn("zhifou image deadline reached:", source.id,
+                    "at", tostring(i), "of", tostring(total))
+                break
+            end
             local url = pending[i].url
             local msg = string.format("%s下载图片 %d/%d…（点击可取消）",
                 prefix, i, total)
@@ -1155,7 +1170,10 @@ function TechNews:fetchSource(source, limit, progress, range)
     end
 
     -- 字节额度对象要跨源复用：合并期由调用方持有并传回下一源
-    return { items = result, images = downloaded, image_skips = image_skips }
+    return {
+        items = result, images = downloaded,
+        image_skips = image_skips, budget_hit = hit_deadline,
+    }
 end
 
 --- 生成 EPUB 并打开
@@ -1546,11 +1564,19 @@ function TechNews:fetchAndOpenMerged(issue_id, date, range)
         -- 字节额度跨源共享：否则每个源各留 12MB，整期仍可能到几十 MB
         local bytes_budget = images.new_budget()
         local image_skips = 0
+        -- 整期时间预算：超了就停止后续源，并在完成提示里说明
+        local deadline = os.time() + FETCH_BUDGET_SECONDS
+        local skipped_by_budget = {}
         for i, source in ipairs(sources) do
+            if os.time() > deadline then
+                skipped_by_budget[#skipped_by_budget + 1] = source.name
+                logger.warn("zhifou fetch deadline reached, skip source:", source.id)
+            else
             local bundle, err = self:fetchSource(source, source.merge_max_items,
                 { source_index = i, source_count = #sources,
                   image_budget = image_budget,
-                  image_bytes_budget = bytes_budget }, range)
+                  image_bytes_budget = bytes_budget,
+                  deadline = deadline }, range)
             if bundle then
                 -- 合并期图片上限跨源共享：按实际下载数扣减剩余额度
                 local used = 0
@@ -1573,6 +1599,7 @@ function TechNews:fetchAndOpenMerged(issue_id, date, range)
                 logger.warn("zhifou merge source failed:",
                     source.id, tostring(err))
                 failed[#failed + 1] = { name = source.name, err = tostring(err) }
+            end
             end
         end
         if #all == 0 then
@@ -1620,6 +1647,10 @@ function TechNews:fetchAndOpenMerged(issue_id, date, range)
         -- 有图被略过也要说一声（否则用户只看到图片数变少，不知道是体积闸门）
         if image_skips > 0 then
             warnings[#warnings + 1] = string.format("%d 张图过大已略过", image_skips)
+        end
+        if #skipped_by_budget > 0 then
+            warnings[#warnings + 1] = string.format("抓取超时已跳过 %d 个源（%s）",
+                #skipped_by_budget, table.concat(skipped_by_budget, "、"))
         end
         self:buildAndOpen(issue_id, title, date, kept, all_images, warnings)
         Trapper:clear()

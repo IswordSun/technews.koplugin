@@ -426,7 +426,10 @@ function favorites.add(article, issue_path, progress_cb, with_gray)
             -- 与每日抓取同规则：CDN 缩放/转 JPEG/灰度 → 魔数判型 → 体积额度
             local image = images.fetch(url, {
                 download = function(target)
-                    return http.get(target, nil, nil, nil, { referer = imgurl.referer(target) })
+                    return http.get(target, nil, nil, nil, {
+                        referer = imgurl.referer(target),
+                        max_bytes = images.MAX_DOWNLOAD_BYTES,
+                    })
                 end,
                 rewrite = imgurl.rewrite,
                 budget = budget,

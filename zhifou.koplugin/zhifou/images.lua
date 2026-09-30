@@ -16,6 +16,9 @@ images.MAX_IMAGE_BYTES = 1500 * 1024
 images.MAX_TOTAL_BYTES = 12 * 1024 * 1024
 -- 先按 800 宽取；CDN 报 400（超高图）或单张仍超限时降到 480
 images.WIDTHS = { 800, 480 }
+-- 下载阶段的硬上限：超过就让 LuaSocket 中断传输（不必把整张巨图读进内存），
+-- 之后由额度逻辑判为 too_large 并降档重试或略过
+images.MAX_DOWNLOAD_BYTES = 3 * 1024 * 1024
 
 --- 按魔数判定图片类型；不是图片（HTML 错误页、空响应）返回 nil。
 -- @return "jpg" | "png" | "gif" | "webp" | nil

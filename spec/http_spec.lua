@@ -40,11 +40,12 @@ package.preload["ltn12"] = function()
         },
     }
 end
+local sleeps = {}
 package.preload["socket"] = function()
     return {
         -- 与 LuaSocket 同语义：丢掉前 n 个返回值
         skip = function(n, ...) return select(n + 1, ...) end,
-        sleep = function() end,
+        sleep = function(seconds) sleeps[#sleeps + 1] = seconds end,
     }
 end
 package.preload["ssl.https"] = function() return transport end
@@ -102,7 +103,14 @@ local GZ = unhex("1f8b08000000000002ffb3b1afc8cd51284b2d2acecccfb35532d43350b2b7
 
 local function reset()
     calls = {}
+    sleeps = {}
     response = nil
+end
+
+local function total_sleep()
+    local sum = 0
+    for _, value in ipairs(sleeps) do sum = sum + value end
+    return sum
 end
 
 ----------------------------------------------------------------------
@@ -198,6 +206,100 @@ do
     eq(body, "recovered", "5xx 后重试成功")
     eq(attempt, 2, "5xx 重试了一次")
     transport.request = fake_request
+end
+
+----------------------------------------------------------------------
+-- 5) 限流与退避：429 听 Retry-After，408 重试，退避指数增长且有上限
+----------------------------------------------------------------------
+
+local function flaky_responder(code, headers, body_text)
+    local n = 0
+    return function(req)
+        n = n + 1
+        calls[#calls + 1] = { url = req.url, headers = req.headers }
+        if n == 1 then
+            return 1, code, headers or {}, string.format("HTTP/1.1 %d Status", code)
+        end
+        if req.sink and body_text then req.sink(body_text) end
+        return 1, 200, {}, "HTTP/1.1 200 OK"
+    end
+end
+
+do
+    reset()
+    transport.request = flaky_responder(429, { ["retry-after"] = "2" }, "ok")
+    local body = http.get("https://example.com/limited")
+    eq(body, "ok", "429 后重试成功")
+    eq(#calls, 2, "429 重试了一次")
+    eq(math.floor(total_sleep() + 0.5), 2, "Retry-After: 2 被遵守（睡约 2 秒）")
+    transport.request = fake_request
+end
+
+do
+    reset()
+    transport.request = flaky_responder(429, { ["retry-after"] = "9999" }, "ok")
+    http.get("https://example.com/limited-huge")
+    ok(total_sleep() <= 10.01, "Retry-After 被钳制到 10 秒内", tostring(total_sleep()))
+    transport.request = fake_request
+end
+
+do
+    reset()
+    transport.request = flaky_responder(408, {}, "ok")
+    eq(http.get("https://example.com/timeout"), "ok", "408 也会重试")
+    eq(#calls, 2, "408 重试了一次")
+    transport.request = fake_request
+end
+
+do
+    reset()
+    transport.request = flaky_responder(403, {}, "ok")
+    local body, err = http.get("https://example.com/forbidden")
+    eq(body, nil, "403 不重试（图床防盗链等）")
+    eq(err, "HTTP 403", "403 错误信息保持原格式")
+    eq(#calls, 1, "403 只请求一次")
+    eq(#sleeps, 0, "403 不退避")
+    transport.request = fake_request
+end
+
+do
+    -- 连接层连续失败：退避应为指数增长（0.5 → 1.0），且带抖动（<= +0.25）
+    reset()
+    local n = 0
+    transport.request = function(req)
+        n = n + 1
+        calls[#calls + 1] = { url = req.url, headers = req.headers }
+        return nil, "closed"
+    end
+    local body = http.get("https://example.com/dead", nil, nil, 2)
+    eq(body, nil, "持续失败最终返回 nil")
+    eq(n, 3, "retries=2 → 共 3 次尝试")
+    eq(#sleeps, 2, "两次重试各退避一次")
+    ok(sleeps[1] >= 0.5 and sleeps[1] <= 0.75, "第一次退避 0.5s + 抖动", tostring(sleeps[1]))
+    ok(sleeps[2] >= 1.0 and sleeps[2] <= 1.25, "第二次退避 1.0s + 抖动（指数增长）", tostring(sleeps[2]))
+    transport.request = fake_request
+end
+
+----------------------------------------------------------------------
+-- 6) 响应体字节上限：超限中断传输，且不重试
+----------------------------------------------------------------------
+
+do
+    reset()
+    response = { body = string.rep("x", 5000), headers = {} }
+    local body, err = http.get("https://example.com/huge", nil, nil, 3, { max_bytes = 1000 })
+    eq(body, nil, "超过 max_bytes → 返回 nil")
+    ok(tostring(err):find("响应过大", 1, true) ~= nil, "错误里点明「响应过大」", tostring(err))
+    eq(#calls, 1, "响应过大不重试（确定性错误）")
+end
+
+do
+    reset()
+    response = { body = string.rep("x", 5000), headers = {} }
+    local body = http.get("https://example.com/probe", nil, nil, 3,
+        { max_bytes = 1000, allow_truncated = true })
+    eq(#body, 1000, "allow_truncated：拿到截断数据即算成功（连通性自检用）")
+    eq(#calls, 1, "自检只请求一次")
 end
 
 ----------------------------------------------------------------------
