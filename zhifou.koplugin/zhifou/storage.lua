@@ -71,7 +71,7 @@ end
 
 --- 列出缓存中的期刊物：{ name=文件名, id=源id, date=YYYY-MM-DD, path=完整路径 }
 -- 排序：日期倒序；同一天里合并期在前（更完整），其余按 id。
--- 供「往期缓存」（浏览）与「缓存清理」（逐期删除）共用。
+-- 供「缓存期刊」（浏览）与「缓存清理」（逐期删除）共用。
 function storage:list_issues()
     if lfs.attributes(self.dir, "mode") ~= "directory" then return {} end
     local entries = {}

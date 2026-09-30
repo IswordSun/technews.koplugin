@@ -174,7 +174,7 @@ local function human_size(bytes)
     return string.format("%.1f MB", bytes / 1024 / 1024)
 end
 
--- 缓存期条目的显示名（往期缓存 / 缓存清理共用）：「源名 · 9月27日」（近一周加后缀）
+-- 缓存期条目的显示名（缓存期刊 / 缓存清理共用）：「源名 · 9月27日」（近一周加后缀）
 local function issue_label(entry)
     local base_id = entry.id:gsub("%-week$", "")
     local label
@@ -500,7 +500,7 @@ function TechNews:getHomeItems()
             end,
         },
         {
-            text = "往期缓存",
+            text = "缓存期刊",
             sub_item_table_func = function()
                 return self:getHistoryItems()
             end,
@@ -1144,7 +1144,7 @@ function TechNews:getFavoriteItems()
     return items
 end
 
---- 「往期缓存」子菜单：列出本机缓存过的各期刊物（近 7 天，随缓存清理自然过期）
+--- 「缓存期刊」子菜单：列出本机缓存过的各期刊物（近 7 天，随缓存清理自然过期）
 function TechNews:getHistoryItems()
     local items = {}
     for _, entry in ipairs(storage:list_issues()) do
