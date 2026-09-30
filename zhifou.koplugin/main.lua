@@ -9,18 +9,54 @@
 -- 自测钩子：环境变量 ZHIFOU_SELFTEST=1 时，启动 3 秒后自动打开「合并·今日」
 
 -- 一次性守卫：插件经 dofile 重载会重置模块级变量，必须用全局记录
--- luacheck: globals G_zhifou_sources_prompted G_zhifou_end_patch G_zhifou_toc_patch
+-- luacheck: globals G_zhifou_sources_prompted G_zhifou_end_patch G_zhifou_toc_patch G_zhifou_log_ring
 
 local Device = require("device")
 local Dispatcher = require("dispatcher")
 local Font = require("ui/font")
 local InfoMessage = require("ui/widget/infomessage")
 local TextViewer = require("ui/widget/textviewer")
+local diag = require("zhifou.diag")
+
 local TextWidget = require("ui/widget/textwidget")
 local Trapper = require("ui/trapper")
 local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local logger = require("logger")
+
+-- 最近错误环形记录：设备上没法看日志（无 adb/文件传输）时，
+-- 直接用「设置 → 最近错误（诊断）」把插件记录的失败原因显示在屏幕上。
+-- 只挂一次（插件会被 dofile 重载，模块级变量会重置，故用全局表）。
+local LOG_RING_SIZE = 40
+
+local function install_log_ring()
+    if G_zhifou_log_ring then return G_zhifou_log_ring end
+    local ring = { entries = {}, hooked = true }
+    G_zhifou_log_ring = ring
+    local originals = { warn = logger.warn, err = logger.err }
+    local function record(prefix, ...)
+        local parts = {}
+        for i = 1, select("#", ...) do
+            parts[#parts + 1] = tostring((select(i, ...)))
+        end
+        local text = table.concat(parts, " ")
+        if text:find("zhifou", 1, true) then
+            ring.entries[#ring.entries + 1] = string.format("[%s] %s %s",
+                os.date("%H:%M:%S"), prefix, text)
+            while #ring.entries > LOG_RING_SIZE do table.remove(ring.entries, 1) end
+        end
+    end
+    for name, prefix in pairs({ warn = "WARN", err = "ERR" }) do
+        local original = originals[name]
+        if type(original) == "function" then
+            logger[name] = function(...)
+                pcall(record, prefix, ...)   -- 记录失败绝不能影响日志本身
+                return original(...)
+            end
+        end
+    end
+    return ring
+end
 
 local dedupe = require("zhifou.dedupe")
 local extract = require("zhifou.extract")
@@ -48,7 +84,7 @@ local FETCH_BUDGET_SECONDS = 300
 local TechNews = WidgetContainer:extend{
     name = "zhifou",
     is_doc_only = false,
-    version = "0.1.16",
+    version = "0.1.17",
 }
 
 -- 自测只执行一次：插件用 dofile 加载，模块级变量会随 UI 重建被重置，
@@ -231,6 +267,8 @@ function TechNews:init()
             return ret
         end
     end
+
+    install_log_ring()
 
     if os.getenv("ZHIFOU_SELFTEST") == "1" and not G_zhifou_selftest_done then
         G_zhifou_selftest_done = true
@@ -600,6 +638,59 @@ function TechNews:checkSourceConnectivity()
     })
 end
 
+--- 网络诊断：在**子进程**里分阶段探测（DNS→TCP→TLS→HTTP→gzip），
+-- 结果一次性显示在屏幕上。
+-- 为什么放子进程：DNS 解析卡住时主进程会一起冻住、连取消都点不动；
+-- 子进程里跑则界面可用，点取消会直接杀掉它——"卡在 DNS"本身就是结论。
+function TechNews:runNetworkDiagnosis()
+    local sources = subscriptions.enabled(registry, self:sourceSetting())
+    -- 探测目标：优先用第一个已订阅源的 feed；没有就用一个通用 HTTPS 目标
+    local targets = {}
+    for _, source in ipairs(sources) do
+        if source.feed and #targets < 3 then
+            targets[#targets + 1] = { name = source.name, url = source.feed }
+        end
+    end
+    if #targets == 0 then
+        targets[1] = { name = "IT之家", url = "https://www.ithome.com/rss/" }
+    end
+    -- 追一个纯 http 目标：用来区分「HTTPS/TLS 有问题」还是「整机没网」
+    targets[#targets + 1] = { name = "纯 HTTP 对照", url = "http://www.dgtle.com/rss/dgtle.xml" }
+
+    Trapper:wrap(function()
+        local completed, text = Trapper:dismissableRunInSubprocess(function()
+            local lines = {
+                "分阶段探测（每步的耗时与错误原文）：",
+                "若长时间停在 DNS 一步，点取消即可——那说明解析卡住，本身就是结论。",
+                "",
+            }
+            for _, target in ipairs(targets) do
+                Trapper:info(string.format("诊断 %s…（点击可取消）", target.name))
+                lines[#lines + 1] = string.format("【%s】%s", target.name, target.url)
+                local ok, result = pcall(diag.probe, target.url, { timeout = 5 })
+                if ok then
+                    lines[#lines + 1] = diag.render(result)
+                else
+                    lines[#lines + 1] = "探测异常：" .. tostring(result)
+                end
+                lines[#lines + 1] = ""
+            end
+            local gz = require("zhifou.http")
+            lines[#lines + 1] = string.format("本机 gzip 开关：%s（true = 允许声明压缩）",
+                tostring(gz.gzip_usable()))
+            return table.concat(lines, "\n")
+        end, "网络诊断中…（点击可取消）", true)
+        if not completed then
+            UIManager:show(InfoMessage:new{ text = "诊断已取消", timeout = 2 })
+            return
+        end
+        UIManager:show(TextViewer:new{
+            title = "知否 · 网络诊断",
+            text = tostring(text or "（无结果）"),
+        })
+    end)
+end
+
 --- 「设置」子菜单：管理收藏（仅有收藏时）、订阅源设置、包含图片、清理全部缓存
 function TechNews:getSettingItems()
     local items = {}
@@ -622,6 +713,28 @@ function TechNews:getSettingItems()
         keep_menu_open = true,
         callback = function()
             self:checkSourceConnectivity()
+        end,
+    }
+    items[#items + 1] = {
+        text = "网络诊断（分阶段）",
+        keep_menu_open = true,
+        callback = function()
+            self:runNetworkDiagnosis()
+        end,
+    }
+    items[#items + 1] = {
+        text = "最近错误（诊断）",
+        keep_menu_open = true,
+        callback = function()
+            local ring = install_log_ring()
+            local text
+            if #ring.entries == 0 then
+                text = "本次启动以来没有记录到插件错误。\n\n"
+                    .. "若刚抓取失败，请先抓一次再回来看。"
+            else
+                text = table.concat(ring.entries, "\n")
+            end
+            UIManager:show(TextViewer:new{ title = "知否 · 最近错误", text = text })
         end,
     }
     items[#items + 1] = {
